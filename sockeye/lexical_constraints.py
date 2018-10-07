@@ -226,6 +226,207 @@ class AvoidBatch:
         return tuple(zip(*to_avoid))  # type: ignore
 
 
+
+
+# Positive constraints with Trie
+# If this is mostly compatible with AvoidTrie, I'll merge the two
+class IncludeTrie:
+    """
+    Represents a set of phrasal constraints to include for an input sentence.
+    These are organized into a trie.
+	This is similar to AvoidTrie but has special operations.
+    """
+    def __init__(self,
+                 raw_phrases: Optional[RawConstraintList] = None) -> None:
+        self.final_ids = set()  # type: Set[int]
+        self.children = {}  # type: Dict[int,'AvoidTrie']
+
+        if raw_phrases:
+            for phrase in raw_phrases:
+                self.add_phrase(phrase)
+
+    def __str__(self) -> str:
+        s = '({}'.format(list(self.final_ids))
+        for child_id in self.children.keys():
+            s += ' -> {} {}'.format(child_id, self.children[child_id])
+        s += ')'
+        return s
+
+    def __len__(self) -> int:
+        """
+        Returns the number of avoid phrases represented in the trie.
+        """
+        phrase_count = len(self.final_ids)
+        for child in self.children.values():
+            phrase_count += len(child)
+        return phrase_count
+	
+	# from AvoidTrie -- not sure if needed for positive constraints
+	'''
+    def add_trie(self,
+                 trie: 'IncludeTrie',
+                 phrase: Optional[List[int]] = None) -> None:
+        self.final_ids |= trie.final()
+        for child_id, child in trie.children.items():
+            if child_id not in self.children:
+                self.children[child_id] = AvoidTrie()
+            self.children[child_id].add_trie(child)
+	'''
+    def add_phrase(self,
+                   phrase: List[int]) -> None:
+        """
+        Recursively adds a phrase to this trie node.
+
+        :param phrase: A list of word IDs to add to this trie node.
+        """
+        if len(phrase) == 1:
+            self.final_ids.add(phrase[0])
+        else:
+            next_word = phrase[0]
+            if next_word not in self.children:
+                self.children[next_word] = AvoidTrie()
+            self.step(next_word).add_phrase(phrase[1:])
+
+    def step(self, word_id: int) -> Optional['IncludeTrie']:
+        """
+        Returns the child node along the requested arc.
+
+        :param phrase: A list of word IDs to add to this trie node.
+        :return: The child node along the requested arc, or None if no such arc exists.
+        """
+        return self.children.get(word_id, None)
+	
+	def prune(self, phrase) -> bool:
+		"""
+		Eliminate the path to the specified phrase and return if we have satisfied all the constraints.
+		
+		:param phrase: A list of word IDs, the path of which will be elimated from the current Trie
+		"""
+		# if we just satisfied a one-token constraint
+		if len(phrase) ==0:
+			# do nothing -- this should never happen!
+			return
+		if len(phrase) == 1:
+			if phrase[0] in self.final_ids:
+				self.final_ids.remove(phrase[0])
+		next_step = self.step(phrase[0])
+		if next_step:
+			if next_step.prune(phrase[1:])
+				self.children.remove(phrase[0])
+		# check if we have satisfied all constraints
+		return not bool(self.final_ids) and not bool(self.children)
+
+    def final(self) -> Set[int]:
+        """
+        Returns the set of final ids at this node.
+
+        :return: The set of word IDs that end a constraint at this state.
+        """
+        return self.final_ids
+
+class IncludeState:
+    """
+    Represents the state of a hypothesis in the IncludeTrie.
+	This can determine how far a hypothesis is from finishing all constraints.
+
+    :param include_trie: The trie containing the phrases to include.
+    :param state: The current state (defaults to root).
+    """
+    def __init__(self,
+                 include_trie: IncludeTrie,
+                 state: IncludeTrie = None) -> None:
+
+        self.root = include_trie
+        self.state = state if state else self.root
+		self.current_phrase = []  # progress we made satisfying one of the constraints
+    def consume(self, word_id: int) -> 'IncludeState':
+        """
+        Consumes a word, and updates the state based on it. Returns new objects on a state change.
+
+        The next state for a word can be the following cases:
+		(1)	If the this finishes a constraint, we prune the branch.
+        (2) If the word is found in our set of outgoing child arcs, we take that transition.
+        (3) If the word is not found, we need to reset to root (or stay at root if already) and then try again.
+		(4) Otherwise, just return self
+
+        :param word_id: The word that was just generated.
+        """
+        if word_id in self.state.final():
+			# bingo! we fnished a constraint
+			self.current_phrase.append(word_id)
+			if self.root.prune(self.current_phrase):
+				return None
+			next_state = self.state.step(word_id)
+			# go further or go home
+            return IncludeState(self.root, next_state if next_state else self.root)
+		elif word_id in self.state.children():
+			self.current_phrase.append(word_id)
+            return IncludeState(self.root, self.state.step(word_id))
+        elif self.state != self.root:
+			self.state = self.root
+			self.current_phrase = []
+			return self.consume(word_id)
+        else:
+            return self
+
+    def __str__(self) -> str:
+        return str(self.state)
+
+class IncludeBatch:
+    """
+    Represents a set of phrasal constraints for all items in the batch.
+    For each hypotheses, there is an IncludeTrie tracking its state.
+
+    :param batch_size: The batch size.
+    :param beam_size: The beam size.
+    :param include_list: The list of lists (raw phrasal constraints as IDs, one for each item in the batch).
+    :param global_include_trie: A translator-level vocabulary of items to include.
+    """
+    def __init__(self,
+                 batch_size: int,
+                 beam_size: int,
+                 include_list: Optional[List[RawConstraintList]] = None,
+                 global_include_trie: Optional[IncludeTrie] = None) -> None:
+
+        self.global_include_states = []  # type: List[IncludeState]
+        self.local_include_states = []  # type: List[IncludeState]
+
+        # Store the global trie for each hypothesis
+        if global_include_trie is not None:
+            self.global_include_states = [IncludeState(global_include_trie)] * batch_size * beam_size
+
+        # Store the sentence-level tries for each item in their portions of the beam
+        if include_list is not None:
+            for raw_phrases in include_list:
+                self.local_include_states += [IncludeState(IncludeTrie(raw_phrases))] * beam_size
+
+    def reorder(self, indices: mx.nd.NDArray) -> None:
+        """
+        Reorders the avoid list according to the selected row indices.
+        This can produce duplicates, but this is fixed if state changes occur in consume().
+
+        :param indices: An mx.nd.NDArray containing indices of hypotheses to select.
+        """
+        if self.global_include_states:
+            self.global_include_states = [self.global_include_states[x] for x in indices.asnumpy()]
+
+        if self.local_include_states:
+            self.local_include_states = [self.local_include_states[x] for x in indices.asnumpy()]
+
+    def consume(self, word_ids: mx.nd.NDArray) -> None:
+        """
+        Consumes a word for each trie, updating respective states.
+
+        :param word_ids: The set of word IDs.
+        """
+        word_ids = word_ids.asnumpy().tolist()
+        for i, word_id in enumerate(word_ids):
+            if self.global_include_states and self.global_include_states[i]:
+                self.global_include_states[i] = self.global_include_states[i].consume(word_id)
+            if self.local_include_states and self.local_include_states[i]:
+                self.local_include_states[i] = self.local_include_states[i].consume(word_id)
+
+
 class ConstrainedHypothesis:
     """
     Represents a set of words and phrases that must appear in the output.
