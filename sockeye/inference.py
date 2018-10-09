@@ -2095,7 +2095,7 @@ class Translator:
             #                                                                               finished)
 
             # (7) update negative constraints
-			if self.global_avoid_trie or any(raw_avoid_list):
+	    if self.global_avoid_trie or any(raw_avoid_list):
                 avoid_states.reorder(best_hyp_indices)
                 avoid_states.consume(best_word_indices)
 
