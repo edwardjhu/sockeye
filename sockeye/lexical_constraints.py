@@ -464,9 +464,9 @@ class IncludeBatch:
             self.states = [self.states[x.asscalar()] for x in indices]
 
 
-	def consume(self, word_ids: mx.nd.NDArray) -> None:
-		"""
-		Consumes a word for each trie, updating respective states.
+    def consume(self, word_ids: mx.nd.NDArray) -> None:
+        """
+        Consumes a word for each trie, updating respective states.
 
         :param word_ids: The set of word IDs.
         """
