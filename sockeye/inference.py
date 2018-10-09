@@ -1102,7 +1102,7 @@ class Translator:
 			for phrase in data_io.read_content(include_list):
 				phrase_ids = data_io.tokens2ids(phrase, self.vocab_target)
 				if self.unk_id in phrase_ids:
-					logger.warning("Global avoid phrase '%s' contains an %s; this may indicate improper preprocessing.", ' '.join(phrase), C.UNK_SYMBOL)
+					logger.warning("Global include phrase '%s' contains an %s; this may indicate improper preprocessing.", ' '.join(phrase), C.UNK_SYMBOL)
 				self.global_include_trie.add_phrase(phrase_ids)
 
 		self.global_avoid_trie = None
@@ -1307,7 +1307,7 @@ class Translator:
 			if trans_input.include_list is not None:
 				raw_include_list[j] = [data_io.tokens2ids(phrase, self.vocab_target) for phrase in
 									  trans_input.include_list]
-				if any(self.unk_id in phrase for phrase in raw_avoid_list[j]):
+				if any(self.unk_id in phrase for phrase in raw_include_list[j]):
 					logger.warning("Sentence %s: %s was found in the list of phrases to avoid; "
 								   "this may indicate improper preprocessing.", trans_input.sentence_id, C.UNK_SYMBOL)
 
@@ -1565,7 +1565,8 @@ class Translator:
 		if self.global_include_trie or any(raw_include_list):
 			include_states = constrained.IncludeBatch(self.batch_size, self.beam_size,
 												  include_list=raw_include_list,
-												  global_include_trie=self.global_include_trie)
+												  global_include_trie=self.global_include_trie,
+												  eos_id=self.vocab_target[C.EOS_SYMBOL])
 			include_states.consume(best_word_indices)
 		
 		
@@ -1612,7 +1613,7 @@ class Translator:
 					self.beam_size,
 					inactive,
 					scores,
-					raw_include_list,
+					include_states,
 					best_hyp_indices,
 					best_word_indices,
 					scores_accumulated,
@@ -1727,7 +1728,7 @@ class Translator:
 							attentions: np.ndarray,
 							seq_scores: np.ndarray,
 							lengths: np.ndarray,
-							include_states: Optional[constrained.AvoidBatch] = None,
+							include_states: Optional[constrained.IncludeBatch] = None,
 							beam_histories: Optional[List[BeamHistory]] = None) -> List[Translation]:
 		"""
 		Return the best (aka top) entry from the n-best list.
@@ -1747,8 +1748,9 @@ class Translator:
 
 		if include_states:
 			# For constrained decoding, select from items that have met all constraints (might not be finished)
-			unmet = np.array(include_states.getUnmet())  # for IncludeTrie, 
-			filtered = np.where(met == 0, seq_scores.flatten(), np.inf)
+			unmet = np.array(include_states.getUnmet())  # for IncludeBatch, 
+			print(unmet)
+			filtered = np.where(unmet != 0, seq_scores.flatten(), np.inf)
 			filtered = filtered.reshape((self.batch_size, self.beam_size))
 			best_ids += np.argmin(filtered, axis=1).astype('int32')
 

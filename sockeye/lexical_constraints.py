@@ -296,7 +296,19 @@ class IncludeTrie:
 		"""
 		return self.children.get(word_id, None)
 	
-	def prune(self, phrase) -> bool:
+	def prune(self, phrase) -> Optional['IncludeTrie']:
+		"""
+		Create a copy and prune.
+		
+		:param phrase: A list of word IDs, the path of which will be elimated from the current Trie
+		"""
+		to_prune = copy.deepcopy(self)
+		if to_prune._prune(phrase):
+			return None
+		return to_prune
+
+	
+	def _prune(self, phrase) -> bool:
 		"""
 		Eliminate the path to the specified phrase and return if we have satisfied all the constraints.
 		
@@ -309,12 +321,13 @@ class IncludeTrie:
 		if len(phrase) == 1:
 			if phrase[0] in self.final_ids:
 				self.final_ids.remove(phrase[0])
+			return
 		next_step = self.step(phrase[0])
 		if next_step:
 			if next_step.prune(phrase[1:]):
 				self.children.remove(phrase[0])
 		# check if we have satisfied all constraints
-		return not bool(self.final_ids) and not bool(self.children)
+		return (not bool(self.final_ids)) and (not bool(self.children))
 
 	def final(self) -> Set[int]:
 		"""
@@ -331,17 +344,18 @@ class IncludeState:
 
 	:param include_trie: The trie containing the phrases to include.
 	:param state: The current state (defaults to root).
+	:param eos_id: The end-of-sentence ID.
 	"""
 	def __init__(self,
 				 include_trie: IncludeTrie,
-				 state: IncludeTrie = None) -> None:
+				 eos_id: int,
+				 state: IncludeTrie = None,
+				 current_phrase: List[int] = []) -> None:
 
 		self.root = include_trie
 		self.state = state if state else self.root
-		self.current_phrase = []  # progress we made satisfying one of the constraints
-		self.row = row
-		self.col = col
-		self.score = score
+		self.current_phrase = current_phrase  # progress we made satisfying one of the constraints
+		self.eos_id = eos_id
 	def consume(self, word_id: int) -> 'IncludeState':
 		"""
 		Consumes a word, and updates the state based on it. Returns new objects on a state change.
@@ -354,23 +368,25 @@ class IncludeState:
 
 		:param word_id: The word that was just generated.
 		"""
+		# we are done
+		if self.root == None:
+			return self
 		if word_id in self.state.final():
 			# bingo! we fnished a constraint
-			self.current_phrase.append(word_id)
-			if self.root.prune(self.current_phrase):
-				return None
+			new_current_phrase = self.current_phrase + [word_id]
+			new_root = self.root.prune(new_current_phrase)
+			if not new_root:
+				return IncludeState(None, None)
 			next_state = self.state.step(word_id)
 			# go further or go home
-			return IncludeState(self.root, next_state if next_state else self.root)
-		elif word_id in self.state.children():
-			self.current_phrase.append(word_id)
-			return IncludeState(self.root, self.state.step(word_id))
+			if next_state:
+				return IncludeState(new_root, next_state, new_current_phrase)
+			return IncludeState(new_root, new_root)
+		elif word_id in self.state.children:
+			return IncludeState(self.root, self.state.step(word_id), current_phrase=self.current_phrase + [word_id])
 		elif self.state != self.root:
-			self.state = self.root
-			self.current_phrase = []
-			return self.consume(word_id)
-		else:
-			return self
+			return IncludeState(self.root, self.root).consume(word_id)
+		return self
 	
 	def is_valid(self, wordid) -> bool:
 		"""
@@ -379,19 +395,21 @@ class IncludeState:
 		:param wordid: The wordid to validate.
 		:return: True if all constraints are already met or the word ID is not the EOS id.
 		"""
-		return not self.root or wordid != self.eos_id or (len(self.root) == 1 and self.eos_id in self.state.final_id())
+		return not self.root or wordid != self.eos_id or (len(self.root) == 1 and self.eos_id in self.state.final())
 	
-	def wanted(self) -> List[int]:
+	def wanted(self) -> Set[int]:
 		"""
 		Return all favorable next words (those that will advance toward fulfilling constraints).
 		"""
-		return [i for i in self.state.final()] + [i for i in self.state.children]
+		if not self.root:
+			return set()
+		return set([i for i in self.state.final()] + [i for i in self.state.children])
 	
-	def unmet(sef) -> int:
+	def unmet(self) -> int:
 		"""
 		Return the number of unmet constraints.
 		"""
-		return len(self.root)
+		return 0 if not self.root else len(self.root)
 
 	def __str__(self) -> str:
 		return str(self.state)
@@ -405,32 +423,34 @@ class IncludeBatch:
 	:param beam_size: The beam size.
 	:param include_list: The list of lists (raw phrasal constraints as IDs, one for each item in the batch).
 	:param global_include_trie: A translator-level vocabulary of items to include.
+	:param eos_id: The end-of-sentence ID.
 	"""
 	def __init__(self,
 				 batch_size: int,
 				 beam_size: int,
+				 eos_id: int,
 				 include_list: Optional[List[RawConstraintList]] = None,
 				 global_include_trie: Optional[IncludeTrie] = None) -> None:
 
-		self.states = None	# type: List[IncludeState]
-
+		print('haha! I have a beam size of ' + str(beam_size) + 'and a batch size of ' + str(batch_size))
+		
+		self.states = []	# type: List[IncludeState]
 		# Store the global trie for each hypothesis
 		if global_include_trie is not None:
 			for token in global_include_trie:
-				self.states = [IncludeState(global_include_trie)] * batch_size * beam_size
-		else:
-			self.states = [None] * beam_size
+				self.states = [IncludeState(global_include_trie, eos_id=eos_id)] * batch_size * beam_size
 
 
 		# Store the sentence-level tries for each item in their portions of the beam
 		if include_list is not None:
-			for (i, raw_phrases) in enumerate(include_list):
-				if self.states[i]:
-					for state in self.states[i]:
+			if self.states != []:
+				for (i, raw_phrases) in enumerate(include_list):
+					for j in range(beam_size):
 						for phrase in raw_phrases:
-							state.root.add_phrase(phrase)
-				else:
-					self.states[i] = [IncludeState(IncludeTrie(raw_phrases))] * beam_size
+							self.states[i*beam_size+j].root.add_phrase(phrase)
+			else:
+				for (i, raw_phrases) in enumerate(include_list):
+					self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
 
 	def reorder(self, indices: mx.nd.NDArray) -> None:
 		"""
@@ -440,7 +460,7 @@ class IncludeBatch:
 		:param indices: An mx.nd.NDArray containing indices of hypotheses to select.
 		"""
 		if self.states:
-			self.states = [self.states[x] for x in indices.asnumpy()]
+			self.states = [self.states[x] for x in indices]
 
 
 	def consume(self, word_ids: mx.nd.NDArray) -> None:
@@ -451,17 +471,18 @@ class IncludeBatch:
 		"""
 		word_ids = word_ids.asnumpy().tolist()
 		for i, word_id in enumerate(word_ids):
-			if self.states and self.states[i]:
-				self.states[i] = self.states[i].consume(word_id)
+			print('before state for no. ' + str(i) + str(self.states[i]))
+			self.states[i] = (self.states[i]).consume(word_id)
+			print(str(word_id) + ': after state for no. ' + str(i) + str(self.states[i]))
+			print('unmet for no. ' + str(i) + ': ' + str(self.states[i].unmet()))
 
 	def getUnmet(self) -> List[int]:
 		"""
 		Return the number of unmet constraints for each tracked hypothesis.
 		"""
-		result = [0] * len(self.states)
+		result = []
 		for i in range(len(self.states)):
-			if self.states != [] and self.states[i]:
-				result[i] += len(self.states[i])
+			result.append(self.states[i].unmet())
 		return result
 
 '''
@@ -750,12 +771,12 @@ def topk(batch_size: int,
 
 	for sentno in range(batch_size):
 		rows = slice(sentno * beam_size, (sentno + 1) * beam_size)
-		if include_states.states[sentno] is not None and len(include_states.states[sentno]) > 0:
+		if True: #include_states.states[sentno] is not None and len(include_states.states[sentno]) > 0:
 			best_ids[rows], best_word_ids[rows], seq_scores[rows], \
-			include_states.states[sentno], inactive[rows] = _topk(beam_size,
+			include_states.states[rows], inactive[rows] = _topk(beam_size,
 													 inactive[rows],
 													 scores[rows],
-													 include_states.states[sentno],
+													 include_states.states[rows],
 													 best_ids[rows] - rows.start,
 													 best_word_ids[rows],
 													 seq_scores[rows],
@@ -774,7 +795,7 @@ def topk(batch_size: int,
 def _topk(beam_size: int,
 		  inactive: mx.nd.NDArray,
 		  scores: mx.nd.NDArray,
-		  include_states: List[AvoidState],
+		  include_states: List[IncludeState],
 		  best_ids: mx.nd.NDArray,
 		  best_word_ids: mx.nd.NDArray,
 		  sequence_scores: mx.nd.NDArray,
@@ -804,13 +825,11 @@ def _topk(beam_size: int,
 		row = int(row.asscalar())
 		col = int(col.asscalar())
 		seq_score = float(seq_score.asscalar())
-		if include_states[row]:
-			if include_states[row].is_valid(col):
-				new_item = include_states[row].consume(col)
-				cand = ConstrainedCandidate(row, col, seq_score, new_item)
-		else:
-			cand = ConstrainedCandidate(row, col, seq_score, None)
-		candidates.add(cand)
+		if include_states[row].is_valid(col):
+			print("Huh! I'm consuming " + str(col) + " in _topk")
+			new_item = include_states[row].consume(col)
+			cand = ConstrainedCandidate(row, col, seq_score, new_item)
+			candidates.add(cand)
 			
 
 	# For each hypothesis, we add (2) all the constraints that could follow it and
@@ -821,22 +840,22 @@ def _topk(beam_size: int,
 			continue
 
 		hyp = include_states[row]
-		nextones = None
-		if hyp:
-			# (2) add all the constraints that could extend this
-			nextones = hyp.wanted()
+		
+		# (2) add all the constraints that could extend this
+		nextones = hyp.wanted()
+		print('I want ' + str(nextones))
+		# (3) add the single-best item after this (if it's valid)
+		col = int(best_next[row].asscalar())
+		if hyp.is_valid(col):
+			nextones.add(col)
 
-			# (3) add the single-best item after this (if it's valid)
-			col = int(best_next[row].asscalar())
-			if hyp.is_valid(col):
-				nextones.add(col)
-
-			# Now, create new candidates for each of these items
-			for col in nextones:
-				new_item = hyp.consume(col)
-				score = scores[row, col].asscalar()
-				cand = ConstrainedCandidate(row, col, score, new_item)
-				candidates.add(cand)
+		# Now, create new candidates for each of these items
+		for col in nextones:
+			new_item = hyp.consume(col)
+			print("Huh! I'm consuming " + str(col) + " in _topk 2/3")
+			score = scores[row, col].asscalar()
+			cand = ConstrainedCandidate(row, col, score, new_item)
+			candidates.add(cand)
 
 	# Sort the candidates. After allocating the beam across the banks, we will pick the top items
 	# for each bank from this list
@@ -845,10 +864,9 @@ def _topk(beam_size: int,
 	# The number of hypotheses in each bank
 	counts = [0 for x in range(num_constraints + 1)]
 	for cand in sorted_candidates:
-		if not cand.hypothesis:
-			counts[0] += 1
-		else:
-			counts[cand.hypothesis.unmet()] += 1
+		counts[cand.hypothesis.unmet()] += 1
+	print('counts')
+	print(counts)
 
 	# Adjust allocated bank sizes if there are too few candidates in any of them
 	bank_sizes = get_bank_sizes(num_constraints, beam_size, counts)
