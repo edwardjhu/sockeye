@@ -1750,7 +1750,7 @@ class Translator:
 			# For constrained decoding, select from items that have met all constraints (might not be finished)
 			unmet = np.array(include_states.getUnmet())  # for IncludeBatch, 
 			print(unmet)
-			filtered = np.where(unmet != 0, seq_scores.flatten(), np.inf)
+			filtered = np.where(unmet == 0, seq_scores.flatten(), np.inf)
 			filtered = filtered.reshape((self.batch_size, self.beam_size))
 			best_ids += np.argmin(filtered, axis=1).astype('int32')
 
