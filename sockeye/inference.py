@@ -4,7 +4,7 @@
 # use this file except in compliance with the License. A copy of the License
 # is located at
 #
-#     http://aws.amazon.com/apache2.0/
+#	  http://aws.amazon.com/apache2.0/
 #
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -510,113 +510,113 @@ def load_models(context: mx.context.Context,
 
 
 def models_max_input_output_length(models: List[InferenceModel],
-                                   num_stds: int,
-                                   forced_max_input_len: Optional[int] = None,
-                                   forced_max_output_len: Optional[int] = None) -> Tuple[int, Callable]:
-    """
-    Returns a function to compute maximum output length given a fixed number of standard deviations as a
-    safety margin, and the current input length.
-    Mean and std are taken from the model with the largest values to allow proper ensembling of models
-    trained on different data sets.
+								   num_stds: int,
+								   forced_max_input_len: Optional[int] = None,
+								   forced_max_output_len: Optional[int] = None) -> Tuple[int, Callable]:
+	"""
+	Returns a function to compute maximum output length given a fixed number of standard deviations as a
+	safety margin, and the current input length.
+	Mean and std are taken from the model with the largest values to allow proper ensembling of models
+	trained on different data sets.
 
-    :param models: List of models.
-    :param num_stds: Number of standard deviations to add as a safety margin. If -1, returned maximum output lengths
-                     will always be 2 * input_length.
-    :param forced_max_input_len: An optional overwrite of the maximum input length.
-    :param forced_max_output_len: An optional overwrite of the maximum output length.
-    :return: The maximum input length and a function to get the output length given the input length.
-    """
-    max_mean = max(model.length_ratio_mean for model in models)
-    max_std = max(model.length_ratio_std for model in models)
+	:param models: List of models.
+	:param num_stds: Number of standard deviations to add as a safety margin. If -1, returned maximum output lengths
+					 will always be 2 * input_length.
+	:param forced_max_input_len: An optional overwrite of the maximum input length.
+	:param forced_max_output_len: An optional overwrite of the maximum output length.
+	:return: The maximum input length and a function to get the output length given the input length.
+	"""
+	max_mean = max(model.length_ratio_mean for model in models)
+	max_std = max(model.length_ratio_std for model in models)
 
-    supported_max_seq_len_source = min((model.max_supported_seq_len_source for model in models
-                                        if model.max_supported_seq_len_source is not None),
-                                       default=None)
-    supported_max_seq_len_target = min((model.max_supported_seq_len_target for model in models
-                                        if model.max_supported_seq_len_target is not None),
-                                       default=None)
-    training_max_seq_len_source = min(model.training_max_seq_len_source for model in models)
+	supported_max_seq_len_source = min((model.max_supported_seq_len_source for model in models
+										if model.max_supported_seq_len_source is not None),
+									   default=None)
+	supported_max_seq_len_target = min((model.max_supported_seq_len_target for model in models
+										if model.max_supported_seq_len_target is not None),
+									   default=None)
+	training_max_seq_len_source = min(model.training_max_seq_len_source for model in models)
 
-    return get_max_input_output_length(supported_max_seq_len_source,
-                                       supported_max_seq_len_target,
-                                       training_max_seq_len_source,
-                                       length_ratio_mean=max_mean,
-                                       length_ratio_std=max_std,
-                                       num_stds=num_stds,
-                                       forced_max_input_len=forced_max_input_len,
-                                       forced_max_output_len=forced_max_output_len)
+	return get_max_input_output_length(supported_max_seq_len_source,
+									   supported_max_seq_len_target,
+									   training_max_seq_len_source,
+									   length_ratio_mean=max_mean,
+									   length_ratio_std=max_std,
+									   num_stds=num_stds,
+									   forced_max_input_len=forced_max_input_len,
+									   forced_max_output_len=forced_max_output_len)
 
 
 def get_max_input_output_length(supported_max_seq_len_source: Optional[int],
-                                supported_max_seq_len_target: Optional[int],
-                                training_max_seq_len_source: Optional[int],
-                                length_ratio_mean: float,
-                                length_ratio_std: float,
-                                num_stds: int,
-                                forced_max_input_len: Optional[int] = None,
-                                forced_max_output_len: Optional[int] = None) -> Tuple[int, Callable]:
-    """
-    Returns a function to compute maximum output length given a fixed number of standard deviations as a
-    safety margin, and the current input length. It takes into account optional maximum source and target lengths.
+								supported_max_seq_len_target: Optional[int],
+								training_max_seq_len_source: Optional[int],
+								length_ratio_mean: float,
+								length_ratio_std: float,
+								num_stds: int,
+								forced_max_input_len: Optional[int] = None,
+								forced_max_output_len: Optional[int] = None) -> Tuple[int, Callable]:
+	"""
+	Returns a function to compute maximum output length given a fixed number of standard deviations as a
+	safety margin, and the current input length. It takes into account optional maximum source and target lengths.
 
-    :param supported_max_seq_len_source: The maximum source length supported by the models.
-    :param supported_max_seq_len_target: The maximum target length supported by the models.
-    :param training_max_seq_len_source: The maximum source length observed during training.
-    :param length_ratio_mean: The mean of the length ratio that was calculated on the raw sequences with special
-           symbols such as EOS or BOS.
-    :param length_ratio_std: The standard deviation of the length ratio.
-    :param num_stds: The number of standard deviations the target length may exceed the mean target length (as long as
-           the supported maximum length allows for this).
-    :param forced_max_input_len: An optional overwrite of the maximum input length.
-    :param forced_max_output_len: An optional overwrite of the maximum out length.
-    :return: The maximum input length and a function to get the output length given the input length.
-    """
-    space_for_bos = 1
-    space_for_eos = 1
+	:param supported_max_seq_len_source: The maximum source length supported by the models.
+	:param supported_max_seq_len_target: The maximum target length supported by the models.
+	:param training_max_seq_len_source: The maximum source length observed during training.
+	:param length_ratio_mean: The mean of the length ratio that was calculated on the raw sequences with special
+		   symbols such as EOS or BOS.
+	:param length_ratio_std: The standard deviation of the length ratio.
+	:param num_stds: The number of standard deviations the target length may exceed the mean target length (as long as
+		   the supported maximum length allows for this).
+	:param forced_max_input_len: An optional overwrite of the maximum input length.
+	:param forced_max_output_len: An optional overwrite of the maximum out length.
+	:return: The maximum input length and a function to get the output length given the input length.
+	"""
+	space_for_bos = 1
+	space_for_eos = 1
 
-    if num_stds < 0:
-        factor = C.TARGET_MAX_LENGTH_FACTOR  # type: float
-    else:
-        factor = length_ratio_mean + (length_ratio_std * num_stds)
+	if num_stds < 0:
+		factor = C.TARGET_MAX_LENGTH_FACTOR  # type: float
+	else:
+		factor = length_ratio_mean + (length_ratio_std * num_stds)
 
-    if forced_max_input_len is None:
-        # Make sure that if there is a hard constraint on the maximum source or target length we never exceed this
-        # constraint. This is for example the case for learned positional embeddings, which are only defined for the
-        # maximum source and target sequence length observed during training.
-        if supported_max_seq_len_source is not None and supported_max_seq_len_target is None:
-            max_input_len = supported_max_seq_len_source
-        elif supported_max_seq_len_source is None and supported_max_seq_len_target is not None:
-            max_output_len = supported_max_seq_len_target - space_for_bos - space_for_eos
-            if np.ceil(factor * training_max_seq_len_source) > max_output_len:
-                max_input_len = int(np.floor(max_output_len / factor))
-            else:
-                max_input_len = training_max_seq_len_source
-        elif supported_max_seq_len_source is not None or supported_max_seq_len_target is not None:
-            max_output_len = supported_max_seq_len_target - space_for_bos - space_for_eos
-            if np.ceil(factor * supported_max_seq_len_source) > max_output_len:
-                max_input_len = int(np.floor(max_output_len / factor))
-            else:
-                max_input_len = supported_max_seq_len_source
-        else:
-            # Any source/target length is supported and max_input_len was not manually set, therefore we use the
-            # maximum length from training.
-            max_input_len = training_max_seq_len_source
-    else:
-        max_input_len = forced_max_input_len
+	if forced_max_input_len is None:
+		# Make sure that if there is a hard constraint on the maximum source or target length we never exceed this
+		# constraint. This is for example the case for learned positional embeddings, which are only defined for the
+		# maximum source and target sequence length observed during training.
+		if supported_max_seq_len_source is not None and supported_max_seq_len_target is None:
+			max_input_len = supported_max_seq_len_source
+		elif supported_max_seq_len_source is None and supported_max_seq_len_target is not None:
+			max_output_len = supported_max_seq_len_target - space_for_bos - space_for_eos
+			if np.ceil(factor * training_max_seq_len_source) > max_output_len:
+				max_input_len = int(np.floor(max_output_len / factor))
+			else:
+				max_input_len = training_max_seq_len_source
+		elif supported_max_seq_len_source is not None or supported_max_seq_len_target is not None:
+			max_output_len = supported_max_seq_len_target - space_for_bos - space_for_eos
+			if np.ceil(factor * supported_max_seq_len_source) > max_output_len:
+				max_input_len = int(np.floor(max_output_len / factor))
+			else:
+				max_input_len = supported_max_seq_len_source
+		else:
+			# Any source/target length is supported and max_input_len was not manually set, therefore we use the
+			# maximum length from training.
+			max_input_len = training_max_seq_len_source
+	else:
+		max_input_len = forced_max_input_len
 
-    def get_max_output_length(input_length: int):
-        """
-        Returns the maximum output length for inference given the input length.
-        Explicitly includes space for BOS and EOS sentence symbols in the target sequence, because we assume
-        that the mean length ratio computed on the training data do not include these special symbols.
-        (see data_io.analyze_sequence_lengths)
-        """
-        if forced_max_output_len is not None:
-            return forced_max_output_len
-        else:
-            return int(np.ceil(factor * input_length)) + space_for_bos + space_for_eos
+	def get_max_output_length(input_length: int):
+		"""
+		Returns the maximum output length for inference given the input length.
+		Explicitly includes space for BOS and EOS sentence symbols in the target sequence, because we assume
+		that the mean length ratio computed on the training data do not include these special symbols.
+		(see data_io.analyze_sequence_lengths)
+		"""
+		if forced_max_output_len is not None:
+			return forced_max_output_len
+		else:
+			return int(np.ceil(factor * input_length)) + space_for_bos + space_for_eos
 
-    return max_input_len, get_max_output_length
+	return max_input_len, get_max_output_length
 
 
 BeamHistory = Dict[str, List]
@@ -724,24 +724,24 @@ class TranslatorInput:
 
 class BadTranslatorInput(TranslatorInput):
 
-    def __init__(self, sentence_id: SentenceId, tokens: Tokens) -> None:
-        super().__init__(sentence_id=sentence_id, tokens=tokens, factors=None)
+	def __init__(self, sentence_id: SentenceId, tokens: Tokens) -> None:
+		super().__init__(sentence_id=sentence_id, tokens=tokens, factors=None)
 
 
 def _bad_input(sentence_id: SentenceId, reason: str = '') -> BadTranslatorInput:
-    logger.warning("Bad input (%s): '%s'. Will return empty output.", sentence_id, reason.strip())
-    return BadTranslatorInput(sentence_id=sentence_id, tokens=[])
+	logger.warning("Bad input (%s): '%s'. Will return empty output.", sentence_id, reason.strip())
+	return BadTranslatorInput(sentence_id=sentence_id, tokens=[])
 
 
 def make_input_from_plain_string(sentence_id: SentenceId, string: str) -> TranslatorInput:
-    """
-    Returns a TranslatorInput object from a plain string.
+	"""
+	Returns a TranslatorInput object from a plain string.
 
-    :param sentence_id: Sentence id.
-    :param string: An input string.
-    :return: A TranslatorInput.
-    """
-    return TranslatorInput(sentence_id, tokens=list(data_io.get_tokens(string)), factors=None)
+	:param sentence_id: Sentence id.
+	:param string: An input string.
+	:return: A TranslatorInput.
+	"""
+	return TranslatorInput(sentence_id, tokens=list(data_io.get_tokens(string)), factors=None)
 
 
 def make_input_from_json_string(sentence_id: SentenceId,
@@ -839,63 +839,63 @@ def make_input_from_dict(sentence_id: SentenceId,
 
 
 def make_input_from_factored_string(sentence_id: SentenceId,
-                                    factored_string: str,
-                                    translator: 'Translator',
-                                    delimiter: str = C.DEFAULT_FACTOR_DELIMITER) -> TranslatorInput:
-    """
-    Returns a TranslatorInput object from a string with factor annotations on a token level, separated by delimiter.
-    If translator does not require any source factors, the string is parsed as a plain token string.
+									factored_string: str,
+									translator: 'Translator',
+									delimiter: str = C.DEFAULT_FACTOR_DELIMITER) -> TranslatorInput:
+	"""
+	Returns a TranslatorInput object from a string with factor annotations on a token level, separated by delimiter.
+	If translator does not require any source factors, the string is parsed as a plain token string.
 
-    :param sentence_id: Sentence id.
-    :param factored_string: An input string with additional factors per token, separated by delimiter.
-    :param translator: A translator object.
-    :param delimiter: A factor delimiter. Default: '|'.
-    :return: A TranslatorInput.
-    """
-    utils.check_condition(bool(delimiter) and not delimiter.isspace(),
-                          "Factor delimiter can not be whitespace or empty.")
+	:param sentence_id: Sentence id.
+	:param factored_string: An input string with additional factors per token, separated by delimiter.
+	:param translator: A translator object.
+	:param delimiter: A factor delimiter. Default: '|'.
+	:return: A TranslatorInput.
+	"""
+	utils.check_condition(bool(delimiter) and not delimiter.isspace(),
+						  "Factor delimiter can not be whitespace or empty.")
 
-    model_num_source_factors = translator.num_source_factors
+	model_num_source_factors = translator.num_source_factors
 
-    if model_num_source_factors == 1:
-        return make_input_from_plain_string(sentence_id=sentence_id, string=factored_string)
+	if model_num_source_factors == 1:
+		return make_input_from_plain_string(sentence_id=sentence_id, string=factored_string)
 
-    tokens = []  # type: Tokens
-    factors = [[] for _ in range(model_num_source_factors - 1)]  # type: List[Tokens]
-    for token_id, token in enumerate(data_io.get_tokens(factored_string)):
-        pieces = token.split(delimiter)
+	tokens = []  # type: Tokens
+	factors = [[] for _ in range(model_num_source_factors - 1)]  # type: List[Tokens]
+	for token_id, token in enumerate(data_io.get_tokens(factored_string)):
+		pieces = token.split(delimiter)
 
-        if not all(pieces) or len(pieces) != model_num_source_factors:
-            logger.error("Failed to parse %d factors at position %d ('%s') in '%s'" % (model_num_source_factors,
-                                                                                       token_id, token,
-                                                                                       factored_string.strip()))
-            return _bad_input(sentence_id, reason=factored_string)
+		if not all(pieces) or len(pieces) != model_num_source_factors:
+			logger.error("Failed to parse %d factors at position %d ('%s') in '%s'" % (model_num_source_factors,
+																					   token_id, token,
+																					   factored_string.strip()))
+			return _bad_input(sentence_id, reason=factored_string)
 
-        tokens.append(pieces[0])
-        for i, factor in enumerate(factors):
-            factors[i].append(pieces[i + 1])
+		tokens.append(pieces[0])
+		for i, factor in enumerate(factors):
+			factors[i].append(pieces[i + 1])
 
-    return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors)
+	return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors)
 
 
 def make_input_from_multiple_strings(sentence_id: SentenceId, strings: List[str]) -> TranslatorInput:
-    """
-    Returns a TranslatorInput object from multiple strings, where the first element corresponds to the surface tokens
-    and the remaining elements to additional factors. All strings must parse into token sequences of the same length.
+	"""
+	Returns a TranslatorInput object from multiple strings, where the first element corresponds to the surface tokens
+	and the remaining elements to additional factors. All strings must parse into token sequences of the same length.
 
-    :param sentence_id: Sentence id.
-    :param strings: A list of strings representing a factored input sequence.
-    :return: A TranslatorInput.
-    """
-    if not bool(strings):
-        return TranslatorInput(sentence_id=sentence_id, tokens=[], factors=None)
+	:param sentence_id: Sentence id.
+	:param strings: A list of strings representing a factored input sequence.
+	:return: A TranslatorInput.
+	"""
+	if not bool(strings):
+		return TranslatorInput(sentence_id=sentence_id, tokens=[], factors=None)
 
-    tokens = list(data_io.get_tokens(strings[0]))
-    factors = [list(data_io.get_tokens(factor)) for factor in strings[1:]]
-    if not all(len(factor) == len(tokens) for factor in factors):
-        logger.error("Length of string sequences do not match: '%s'", strings)
-        return _bad_input(sentence_id, reason=str(strings))
-    return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors)
+	tokens = list(data_io.get_tokens(strings[0]))
+	factors = [list(data_io.get_tokens(factor)) for factor in strings[1:]]
+	if not all(len(factor) == len(tokens) for factor in factors):
+		logger.error("Length of string sequences do not match: '%s'", strings)
+		return _bad_input(sentence_id, reason=str(strings))
+	return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors)
 
 
 class TranslatorOutput:
@@ -1029,27 +1029,11 @@ def empty_translation(add_nbest: bool = False) -> Translation:
                        attention_matrix=np.asarray([[0]]),
                        score=-np.inf,
                        nbest_translations=NBestTranslations([], [], []) if add_nbest else None)
-    __slots__ = ('target_ids', 'attention_matrix', 'score', 'beam_histories')
-
-    def __init__(self,
-                 target_ids: TokenIds,
-                 attention_matrix: np.ndarray,
-                 score: float,
-                 beam_history: List[BeamHistory] = None) -> None:
-        self.target_ids = target_ids
-        self.attention_matrix = attention_matrix
-        self.score = score
-        self.beam_histories = beam_history if beam_history is not None else []
-
-
-def empty_translation() -> Translation:
-    return Translation(target_ids=[], attention_matrix=np.asarray([[0]]), score=-np.inf)
-
 
 IndexedTranslatorInput = NamedTuple('IndexedTranslatorInput', [
-    ('input_idx', int),
-    ('chunk_idx', int),
-    ('translator_input', TranslatorInput)
+	('input_idx', int),
+	('chunk_idx', int),
+	('translator_input', TranslatorInput)
 ])
 """
 Translation of a chunk of a sentence.
@@ -1075,57 +1059,57 @@ Translation of a chunk of a sentence.
 
 
 class ModelState:
-    """
-    A ModelState encapsulates information about the decoder states of an InferenceModel.
-    """
+	"""
+	A ModelState encapsulates information about the decoder states of an InferenceModel.
+	"""
 
-    def __init__(self, states: List[mx.nd.NDArray]) -> None:
-        self.states = states
+	def __init__(self, states: List[mx.nd.NDArray]) -> None:
+		self.states = states
 
-    def sort_state(self, best_hyp_indices: mx.nd.NDArray):
-        """
-        Sorts states according to k-best order from last step in beam search.
-        """
-        self.states = [mx.nd.take(ds, best_hyp_indices) for ds in self.states]
+	def sort_state(self, best_hyp_indices: mx.nd.NDArray):
+		"""
+		Sorts states according to k-best order from last step in beam search.
+		"""
+		self.states = [mx.nd.take(ds, best_hyp_indices) for ds in self.states]
 
 
 class LengthPenalty(mx.gluon.HybridBlock):
-    """
-    Calculates the length penalty as:
-    (beta + len(Y))**alpha / (beta + 1)**alpha
+	"""
+	Calculates the length penalty as:
+	(beta + len(Y))**alpha / (beta + 1)**alpha
 
-    See Wu et al. 2016 (note that in the paper beta has a different meaning,
-    and a fixed value 5 was used for this parameter)
+	See Wu et al. 2016 (note that in the paper beta has a different meaning,
+	and a fixed value 5 was used for this parameter)
 
-    :param alpha: The alpha factor for the length penalty (see above).
-    :param beta: The beta factor for the length penalty (see above).
-    """
+	:param alpha: The alpha factor for the length penalty (see above).
+	:param beta: The beta factor for the length penalty (see above).
+	"""
 
-    def __init__(self, alpha: float = 1.0, beta: float = 0.0, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.alpha = alpha
-        self.beta = beta
-        self.denominator = (self.beta + 1.) ** self.alpha
+	def __init__(self, alpha: float = 1.0, beta: float = 0.0, **kwargs) -> None:
+		super().__init__(**kwargs)
+		self.alpha = alpha
+		self.beta = beta
+		self.denominator = (self.beta + 1.) ** self.alpha
 
-    def hybrid_forward(self, F, lengths):
-        if self.alpha == 0.0:
-            if F is None:
-                return 1.0
-            else:
-                return F.ones_like(lengths)
-        else:
-            numerator = self.beta + lengths if self.beta != 0.0 else lengths
-            numerator = numerator ** self.alpha if self.alpha != 1.0 else numerator
-            return numerator / self.denominator
+	def hybrid_forward(self, F, lengths):
+		if self.alpha == 0.0:
+			if F is None:
+				return 1.0
+			else:
+				return F.ones_like(lengths)
+		else:
+			numerator = self.beta + lengths if self.beta != 0.0 else lengths
+			numerator = numerator ** self.alpha if self.alpha != 1.0 else numerator
+			return numerator / self.denominator
 
-    def get(self, lengths: Union[mx.nd.NDArray, int, float]) -> Union[mx.nd.NDArray, float]:
-        """
-        Calculate the length penalty for the given vector of lengths.
+	def get(self, lengths: Union[mx.nd.NDArray, int, float]) -> Union[mx.nd.NDArray, float]:
+		"""
+		Calculate the length penalty for the given vector of lengths.
 
-        :param lengths: A scalar or a matrix of sentence lengths of dimensionality (batch_size, 1).
-        :return: The length penalty. A scalar or a matrix (batch_size, 1) depending on the input.
-        """
-        return self.hybrid_forward(None, lengths)
+		:param lengths: A scalar or a matrix of sentence lengths of dimensionality (batch_size, 1).
+		:return: The length penalty. A scalar or a matrix (batch_size, 1) depending on the input.
+		"""
+		return self.hybrid_forward(None, lengths)
 
 
 class BrevityPenalty(mx.gluon.HybridBlock):
@@ -2363,12 +2347,12 @@ def _concat_translations(translations: List[Translation], stop_ids: Set[int],
 
 
 class PruneHypotheses(mx.gluon.HybridBlock):
-    """
-    A HybridBlock that returns an array of shape (batch*beam,) indicating which hypotheses are inactive due to pruning.
+	"""
+	A HybridBlock that returns an array of shape (batch*beam,) indicating which hypotheses are inactive due to pruning.
 
-    :param threshold: Pruning threshold.
-    :param beam_size: Beam size.
-    """
+	:param threshold: Pruning threshold.
+	:param beam_size: Beam size.
+	"""
 
     def __init__(self, threshold: float, beam_size: int) -> None:
         super().__init__()
@@ -2384,25 +2368,25 @@ class PruneHypotheses(mx.gluon.HybridBlock):
         inf_array_2d = F.broadcast_like(inf, scores_2d)
         inf_array = F.broadcast_like(inf, scores)
 
-        # best finished scores. Shape: (batch, 1)
-        best_finished_scores = F.min(F.where(finished_2d, scores_2d, inf_array_2d), axis=1, keepdims=True)
-        difference = F.broadcast_minus(scores_2d, best_finished_scores)
-        inactive = F.cast(difference > self.threshold, dtype='int32')
-        inactive = F.reshape(inactive, shape=(-1))
+		# best finished scores. Shape: (batch, 1)
+		best_finished_scores = F.min(F.where(finished_2d, scores_2d, inf_array_2d), axis=1, keepdims=True)
+		difference = F.broadcast_minus(scores_2d, best_finished_scores)
+		inactive = F.cast(difference > self.threshold, dtype='int32')
+		inactive = F.reshape(inactive, shape=(-1))
 
         best_word_indices = F.where(inactive, F.zeros_like(best_word_indices), best_word_indices)
         scores = F.where(inactive, inf_array, scores)
 
-        return inactive, best_word_indices, scores
+	return inactive, best_word_indices, scores
 
 
 class SortByIndex(mx.gluon.HybridBlock):
-    """
-    A HybridBlock that sorts args by the given indices.
-    """
+	"""
+	A HybridBlock that sorts args by the given indices.
+	"""
 
-    def hybrid_forward(self, F, indices, *args):
-        return [F.take(arg, indices) for arg in args]
+	def hybrid_forward(self, F, indices, *args):
+		return [F.take(arg, indices) for arg in args]
 
 
 class TopK(mx.gluon.HybridBlock):
@@ -2588,3 +2572,4 @@ class UpdateScores(mx.gluon.HybridBlock):
         # pad_dist. Shape: (batch*beam, vocab_size-1)
         scores = F.where(F.broadcast_logical_or(finished, inactive), F.concat(scores_accumulated, pad_dist), scores)
         return scores
+
