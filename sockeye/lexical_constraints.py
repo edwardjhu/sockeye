@@ -4,7 +4,7 @@
 # use this file except in compliance with the License. A copy of the License
 # is located at
 #
-#	  http://aws.amazon.com/apache2.0/
+#      http://aws.amazon.com/apache2.0/
 #
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -156,79 +156,79 @@ class AvoidState:
 
 
 class AvoidBatch:
-	"""
-	Represents a set of phrasal constraints for all items in the batch.
-	For each hypotheses, there is an AvoidTrie tracking its state.
+    """
+    Represents a set of phrasal constraints for all items in the batch.
+    For each hypotheses, there is an AvoidTrie tracking its state.
 
-	:param batch_size: The batch size.
-	:param beam_size: The beam size.
-	:param avoid_list: The list of lists (raw phrasal constraints as IDs, one for each item in the batch).
-	:param global_avoid_trie: A translator-level vocabulary of items to avoid.
-	"""
-	def __init__(self,
-				 batch_size: int,
-				 beam_size: int,
-				 avoid_list: Optional[List[RawConstraintList]] = None,
-				 global_avoid_trie: Optional[AvoidTrie] = None) -> None:
+    :param batch_size: The batch size.
+    :param beam_size: The beam size.
+    :param avoid_list: The list of lists (raw phrasal constraints as IDs, one for each item in the batch).
+    :param global_avoid_trie: A translator-level vocabulary of items to avoid.
+    """
+    def __init__(self,
+                 batch_size: int,
+                 beam_size: int,
+                 avoid_list: Optional[List[RawConstraintList]] = None,
+                 global_avoid_trie: Optional[AvoidTrie] = None) -> None:
 
-		self.global_avoid_states = []  # type: List[AvoidState]
-		self.local_avoid_states = []  # type: List[AvoidState]
+        self.global_avoid_states = []  # type: List[AvoidState]
+        self.local_avoid_states = []  # type: List[AvoidState]
 
-		# Store the global trie for each hypothesis
-		if global_avoid_trie is not None:
-			self.global_avoid_states = [AvoidState(global_avoid_trie)] * batch_size * beam_size
+        # Store the global trie for each hypothesis
+        if global_avoid_trie is not None:
+            self.global_avoid_states = [AvoidState(global_avoid_trie)] * batch_size * beam_size
 
-		# Store the sentence-level tries for each item in their portions of the beam
-		if avoid_list is not None:
-			for raw_phrases in avoid_list:
-				self.local_avoid_states += [AvoidState(AvoidTrie(raw_phrases))] * beam_size
+        # Store the sentence-level tries for each item in their portions of the beam
+        if avoid_list is not None:
+            for raw_phrases in avoid_list:
+                self.local_avoid_states += [AvoidState(AvoidTrie(raw_phrases))] * beam_size
 
-	def reorder(self, indices: mx.nd.NDArray) -> None:
-		"""
-		Reorders the avoid list according to the selected row indices.
-		This can produce duplicates, but this is fixed if state changes occur in consume().
+    def reorder(self, indices: mx.nd.NDArray) -> None:
+        """
+        Reorders the avoid list according to the selected row indices.
+        This can produce duplicates, but this is fixed if state changes occur in consume().
 
-		:param indices: An mx.nd.NDArray containing indices of hypotheses to select.
-		"""
-		if self.global_avoid_states:
-			self.global_avoid_states = [self.global_avoid_states[x] for x in indices.asnumpy()]
+        :param indices: An mx.nd.NDArray containing indices of hypotheses to select.
+        """
+        if self.global_avoid_states:
+            self.global_avoid_states = [self.global_avoid_states[x] for x in indices.asnumpy()]
 
-		if self.local_avoid_states:
-			self.local_avoid_states = [self.local_avoid_states[x] for x in indices.asnumpy()]
+        if self.local_avoid_states:
+            self.local_avoid_states = [self.local_avoid_states[x] for x in indices.asnumpy()]
 
-	def consume(self, word_ids: mx.nd.NDArray) -> None:
-		"""
-		Consumes a word for each trie, updating respective states.
+    def consume(self, word_ids: mx.nd.NDArray) -> None:
+        """
+        Consumes a word for each trie, updating respective states.
 
-		:param word_ids: The set of word IDs.
-		"""
-		word_ids = word_ids.asnumpy().tolist()
-		for i, word_id in enumerate(word_ids):
-			if self.global_avoid_states:
-				self.global_avoid_states[i] = self.global_avoid_states[i].consume(word_id)
-			if self.local_avoid_states:
-				self.local_avoid_states[i] = self.local_avoid_states[i].consume(word_id)
+        :param word_ids: The set of word IDs.
+        """
+        word_ids = word_ids.asnumpy().tolist()
+        for i, word_id in enumerate(word_ids):
+            if self.global_avoid_states:
+                self.global_avoid_states[i] = self.global_avoid_states[i].consume(word_id)
+            if self.local_avoid_states:
+                self.local_avoid_states[i] = self.local_avoid_states[i].consume(word_id)
 
-	def avoid(self) -> Tuple[Tuple[int], Tuple[int]]:
-		"""
-		Assembles a list of per-hypothesis words to avoid. The indices are (x, y) pairs into the scores
-		array, which has dimensions (beam_size, target_vocab_size). These values are then used by the caller
-		to set these items to np.inf so they won't be selected. Words to be avoided are selected by
-		consulting both the global trie of phrases and the sentence-specific one.
+    def avoid(self) -> Tuple[Tuple[int], Tuple[int]]:
+        """
+        Assembles a list of per-hypothesis words to avoid. The indices are (x, y) pairs into the scores
+        array, which has dimensions (beam_size, target_vocab_size). These values are then used by the caller
+        to set these items to np.inf so they won't be selected. Words to be avoided are selected by
+        consulting both the global trie of phrases and the sentence-specific one.
 
-		:return: Two lists of indices: the x coordinates and y coordinates.
-		"""
-		to_avoid = set()  # type: Set[Tuple[int, int]]
-		for i, state in enumerate(self.global_avoid_states):
-			for word_id in state.avoid():
-				if word_id > 0:
-					to_avoid.add((i, word_id))
-		for i, state in enumerate(self.local_avoid_states):
-			for word_id in state.avoid():
-				if word_id > 0:
-					to_avoid.add((i, word_id))
+        :return: Two lists of indices: the x coordinates and y coordinates.
+        """
+        to_avoid = set()  # type: Set[Tuple[int, int]]
+        for i, state in enumerate(self.global_avoid_states):
+            for word_id in state.avoid():
+                if word_id > 0:
+                    to_avoid.add((i, word_id))
+        for i, state in enumerate(self.local_avoid_states):
+            for word_id in state.avoid():
+                if word_id > 0:
+                    to_avoid.add((i, word_id))
 
-		return tuple(zip(*to_avoid))  # type: ignore
+        return tuple(zip(*to_avoid))  # type: ignore
 
 
 
@@ -651,68 +651,68 @@ def topk(batch_size: int,
 
 
 def main(args):
-	"""
-	Usage: python3 -m sockeye.lexical_constraints [--bpe BPE_MODEL]
+    """
+    Usage: python3 -m sockeye.lexical_constraints [--bpe BPE_MODEL]
 
-	Reads sentences and constraints on STDIN (tab-delimited) and generates the JSON format
-	that can be used when passing `--json-input` to sockeye.translate. It supports both positive
-	constraints (phrases that must appear in the output) and negative constraints (phrases that
-	must *not* appear in the output).
+    Reads sentences and constraints on STDIN (tab-delimited) and generates the JSON format
+    that can be used when passing `--json-input` to sockeye.translate. It supports both positive
+    constraints (phrases that must appear in the output) and negative constraints (phrases that
+    must *not* appear in the output).
 
-	e.g.,
+    e.g.,
 
-		echo -e "Das ist ein Test .\tThis is\ttest" | python3 -m sockeye.lexical_constraints
+        echo -e "Das ist ein Test .\tThis is\ttest" | python3 -m sockeye.lexical_constraints
 
-	will produce the following JSON object:
+    will produce the following JSON object:
 
-		{ "text": "Das ist ein Test .", "constraints": ["This is", "test"] }
+        { "text": "Das ist ein Test .", "constraints": ["This is", "test"] }
 
-	If you pass `--avoid` to the script, the constraints will be generated as negative constraints, instead:
+    If you pass `--avoid` to the script, the constraints will be generated as negative constraints, instead:
 
-		echo -e "Das ist ein Test .\tThis is\ttest" | python3 -m sockeye.lexical_constraints --avoid
+        echo -e "Das ist ein Test .\tThis is\ttest" | python3 -m sockeye.lexical_constraints --avoid
 
-	will produce the following JSON object (note the new keyword):
+    will produce the following JSON object (note the new keyword):
 
-		{ "text": "Das ist ein Test .", "avoid": ["This is", "test"] }
+        { "text": "Das ist ein Test .", "avoid": ["This is", "test"] }
 
-	Make sure you apply all preprocessing (tokenization, BPE, etc.) to both the source and the target-side constraints.
-	You can then translate this object by passing it to Sockeye on STDIN as follows:
+    Make sure you apply all preprocessing (tokenization, BPE, etc.) to both the source and the target-side constraints.
+    You can then translate this object by passing it to Sockeye on STDIN as follows:
 
-		python3 -m sockeye.translate -m /path/to/model --json-input --beam-size 20 --beam-prune 20
+        python3 -m sockeye.translate -m /path/to/model --json-input --beam-size 20 --beam-prune 20
 
-	Note the recommended Sockeye parameters. Beam pruning isn't needed for negative constraints.
-	"""
-	import sys
-	import json
+    Note the recommended Sockeye parameters. Beam pruning isn't needed for negative constraints.
+    """
+    import sys
+    import json
 
-	for line in sys.stdin:
-		line = line.rstrip()
+    for line in sys.stdin:
+        line = line.rstrip()
 
-		# Constraints are in fields 2+
-		source, *restrictions = line.split('\t')
+        # Constraints are in fields 2+
+        source, *restrictions = line.split('\t')
 
-		obj = {'text': source}
-		constraints = []
-		avoid_list = []
-		for item in restrictions:
-			if args.avoid:
-				avoid_list.append(item)
-			else:
-				constraints.append(item)
+        obj = {'text': source}
+        constraints = []
+        avoid_list = []
+        for item in restrictions:
+            if args.avoid:
+                avoid_list.append(item)
+            else:
+                constraints.append(item)
 
-		if constraints:
-			obj['constraints'] = constraints
-		if avoid_list:
-			obj['avoid'] = avoid_list
+        if constraints:
+            obj['constraints'] = constraints
+        if avoid_list:
+            obj['avoid'] = avoid_list
 
-		print(json.dumps(obj, ensure_ascii=False), flush=True)
+        print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
 if __name__ == '__main__':
-	import argparse
+    import argparse
 
-	parser = argparse.ArgumentParser()
-	parser.add_argument('--avoid', action='store_true', help='Constraints are negative constraints')
-	args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--avoid', action='store_true', help='Constraints are negative constraints')
+    args = parser.parse_args()
 
-	main(args)
+    main(args)
