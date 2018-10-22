@@ -20,7 +20,7 @@ import sockeye.output_handler
 from sockeye.inference import TranslatorInput, TranslatorOutput
 
 stream_handler_tests = [(sockeye.output_handler.StringOutputHandler(io.StringIO()),
-                         TranslatorInput(sentence_id=0, tokens=[], factors=[], constraints=[]),
+                         TranslatorInput(sentence_id=0, tokens=[], factors=[], include_list=[]),
                          TranslatorOutput(sentence_id=0, translation="ein Test", tokens=None,
                                           attention_matrix=None,
                                           score=0.),

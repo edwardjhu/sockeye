@@ -4,7 +4,7 @@
 # use this file except in compliance with the License. A copy of the License
 # is located at
 #
-#     http://aws.amazon.com/apache2.0/
+#      http://aws.amazon.com/apache2.0/
 #
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -35,7 +35,6 @@ class AvoidTrie:
                  raw_phrases: Optional[RawConstraintList] = None) -> None:
         self.final_ids = set()  # type: Set[int]
         self.children = {}  # type: Dict[int,'AvoidTrie']
-
         if raw_phrases:
             for phrase in raw_phrases:
                 self.add_phrase(phrase)
@@ -241,7 +240,6 @@ class IncludeTrie:
                  raw_phrases: Optional[RawConstraintList] = None) -> None:
         self.final_ids = set()  # type: Set[int]
         self.children = {}  # type: Dict[int,'AvoidTrie']
-
         if raw_phrases:
             for phrase in raw_phrases:
                 self.add_phrase(phrase)
@@ -478,7 +476,6 @@ class IncludeBatch:
 
         :param word_ids: The set of word IDs.
         """
-        #print('consuming:', word_ids)
         word_ids = word_ids.asnumpy().tolist()
         for i, word_id in enumerate(word_ids):
             self.states[i] = (self.states[i]).consume(word_id)
@@ -520,7 +517,7 @@ class IncludeBatch:
             result.append(self.states[i].unmet())
         return np.array(result)
 
-
+'''
 def get_bank_sizes(num_constraints: int,
                    beam_size: int,
                    candidate_counts: List[int]) -> List[int]:
@@ -587,7 +584,7 @@ class ConstrainedCandidate:
 
     def __str__(self):
         return '({}, {}, {}, {})'.format(self.row, self.col, self.score, self.hypothesis.unmet())
-
+'''
 
 def topk(batch_size: int,
          beam_size: int,
