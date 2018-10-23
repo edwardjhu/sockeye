@@ -732,7 +732,7 @@ def topk(batch_size: int,
 
     inactive[:big_matrix.shape[1]] = 0
     if big_matrix.shape[1] < batch_size * beam_size:
-        padding = np.zeros((big_matrix[0], batch_size * beam_size - big_matrix.shape[1]))
+        padding = np.zeros((big_matrix.shape[0], batch_size * beam_size - big_matrix.shape[1]))
         big_matrix = np.concatenate((big_matrix, padding), axis=1)
         inactive[big_matrix.shape[1]:] = 1
         
