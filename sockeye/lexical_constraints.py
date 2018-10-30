@@ -517,75 +517,6 @@ class IncludeBatch:
             result.append(self.states[i].unmet())
         return np.array(result)
 
-'''
-def get_bank_sizes(num_constraints: int,
-                   beam_size: int,
-                   candidate_counts: List[int]) -> List[int]:
-    """
-    Evenly distributes the beam across the banks, where each bank is a portion of the beam devoted
-    to hypotheses having met the same number of constraints, 0..num_constraints.
-    After the assignment, banks with more slots than candidates are adjusted.
-
-    :param num_constraints: The number of constraints.
-    :param beam_size: The beam size.
-    :param candidate_counts: The empirical counts of number of candidates in each bank.
-    :return: A distribution over banks.
-    """
-
-    num_banks = num_constraints + 1
-    bank_size = beam_size // num_banks
-    remainder = beam_size - bank_size * num_banks
-
-    # Distribute any remainder to the end
-    assigned = [bank_size for x in range(num_banks)]
-    assigned[-1] += remainder
-
-    # Now, moving right to left, push extra allocation to earlier buckets.
-    # This encodes a bias for higher buckets, but if no candidates are found, space
-    # will be made in lower buckets. This may not be the best strategy, but it is important
-    # that you start pushing from the bucket that is assigned the remainder, for cases where
-    # num_constraints >= beam_size.
-    for i in reversed(range(num_banks)):
-        freeslots = assigned[i] - candidate_counts[i]
-        if freeslots > 0:
-            assigned[i] -= freeslots
-            assigned[(i - 1) % num_banks] += freeslots
-
-    return assigned
-
-
-class ConstrainedCandidate:
-    """
-    Object used to hold candidates for the beam in topk().
-
-    :param row: The row in the scores matrix.
-    :param col: The column (word ID) in the scores matrix.
-    :param score: the associated accumulated score.
-    :param hypothesis: The ConstrainedHypothesis containing information about met constraints.
-    """
-
-    __slots__ = ('row', 'col', 'score', 'hypothesis')
-
-    def __init__(self,
-                 row: int,
-                 col: int,
-                 score: float,
-                 hypothesis: IncludeState) -> None:
-        self.row = row
-        self.col = col
-        self.score = score
-        self.hypothesis = hypothesis
-
-    def __hash__(self):
-        return hash((self.row, self.col))
-
-    def __eq__(self, other):
-        return self.row == other.row and self.col == other.col
-
-    def __str__(self):
-        return '({}, {}, {}, {})'.format(self.row, self.col, self.score, self.hypothesis.unmet())
-'''
-
 def topk(batch_size: int,
          beam_size: int,
          inactive: mx.nd.NDArray,
@@ -614,28 +545,27 @@ def topk(batch_size: int,
     """
     
     wanted_ids, wanted_word_ids = include_states.getWanted() # shape ((batch*beam) * target_vocab)
-    #print('wanted', wanted_ids, wanted_word_ids)
     finished_indices = include_states.getFinished() # shape ((batch*beam) * 1)
-    
-    global_topk = mx.nd.zeros_like(scores, ctx=context)
-    
-    global_topk[best_ids, best_word_ids] = 1
-    global_topk[:, include_states.eos_id] *= finished_indices.as_in_context(context)
+    good_hyp = mx.nd.zeros_like(scores, ctx=context)
+   
+    # Source 1: Global Top K
+    good_hyp[best_ids, best_word_ids] = 1
+    good_hyp[:, include_states.eos_id] *= finished_indices.as_in_context(context)
 
-    #print("sliced global topk", global_topk[0])
+    # Source 2: words that advance the Tries
+    good_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
     
-    wanted_hyp = mx.nd.zeros_like(scores, ctx=context)
-    wanted_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
-    
-    best_next = mx.nd.zeros_like(scores, ctx=context)
+    # Source 2: best word per hypothesis
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
+    good_hyp[mx.nd.arange(best_next_idx.shape[0], ctx=context), best_next_idx] = 1
+ 
+    inf_matrix = mx.nd.zeros_like(scores, ctx=context)
+    inf_matrix[:] = np.inf
+    scores = mx.nd.where(good_hyp, scores, inf_matrix).asnumpy()
+    # Masking inactive hypotheses
+    #print(inactive)
+    scores[inactive.asnumpy() == 1, :] = np.inf
     
-    best_next[mx.nd.arange(best_next_idx.shape[0], ctx=context), best_next_idx] = 1
-
-    final_hyp = global_topk + wanted_hyp + best_next
-    # only keep hypotheses we want to explore
-    scores = np.where(final_hyp.asnumpy(), scores.asnumpy(), np.inf)
-
     final_ids, final_word_ids = np.where(scores != np.inf)
     sent_ids, _ = np.where(scores.reshape((batch_size, -1)) != np.inf)
     final_seq_scores = scores[final_ids, final_word_ids]
@@ -644,12 +574,9 @@ def topk(batch_size: int,
     
     big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
     
-    #print(final_ids, final_word_ids)
     
-    # update unmet
-     
-    big_matrix[1, :] -= np.isin(big_matrix[-2,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[-1,:], wanted_word_ids.asnumpy()).astype(int)
-    
+    # update unmet 
+    big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
     
     def constructParallel(a):
@@ -658,200 +585,34 @@ def topk(batch_size: int,
 
     parallel = constructParallel(big_matrix[1, :])
 
-    big_matrix = np.insert(big_matrix, 1, parallel, axis=0)
-
-    big_matrix = big_matrix[:, np.lexsort((big_matrix[3, :], big_matrix[1, :], big_matrix[0, :]))]
-
+    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], parallel, big_matrix[0, :]))]
     parallel = constructParallel(big_matrix[0, :])
     
-    big_matrix = np.concatenate((big_matrix, parallel.reshape(1, -1)), axis=0)
-    #print(big_matrix)
-    big_matrix = big_matrix[:, big_matrix[-1, :] < beam_size]
-
+    # get rid of hypotheses that won't fit
+    big_matrix = big_matrix[:, parallel < beam_size]
+    inactive[:] = 1
     
-    '''
-    final_hypotheses = []
-    for i in range(len(final_ids)):
-        final_hypotheses.append(include_states.states[final_ids[i]].consume(final_word_ids[i]))
-    final_hypotheses = np.array(final_hypotheses)
+    #print(parallel.shape)
+    parallel = parallel[parallel < beam_size] + big_matrix[0, :] * beam_size
+    inactive[parallel] = 0
     
-    final_order = np.zeros((batch_size*beam_size, ), dtype=np.int32)
-    
-    
-    for sentno in range(batch_size):
-        rows = slice(sentno * beam_size, (sentno + 1) * beam_size)
-
-        
-        
-        
-        sorted_index = np.argsort(final_seq_scores[rows])
-        # construct the final lists
-        final_ids[rows] = final_ids[rows][sorted_index]
-        final_word_ids[rows] = final_word_ids[rows][sorted_index]
-        final_hypotheses[rows] = final_hypotheses[rows][sorted_index]
-        final_seq_scores[rows] = final_seq_scores[rows][sorted_index]
-
-
-        
-        
-        
-        
-        num_constraints = max([state.unmet() for state in include_states.states[rows]])
-
-        counts = [0 for x in range(num_constraints + 1)]
-        for hypo in final_hypotheses[rows]:
-            counts[hypo.unmet()] += 1
-
-        # Adjust allocated bank sizes if there are too few candidates in any of them
-        bank_sizes = get_bank_sizes(num_constraints, beam_size, counts)
-
-        # Sort the candidates into the allocated banks
-        pruned_candidates = []  # type: List[ConstrainedCandidate]
-        for i, hypo in enumerate(final_hypotheses[rows]):
-            bank = hypo.unmet()
-
-            if bank_sizes[bank] > 0:
-                pruned_candidates.append(i)
-                bank_sizes[bank] -= 1
-
-        inactive[rows][:len(pruned_candidates)] = 0
-
-        # Pad the beam so array assignment still works
-        if len(pruned_candidates) < beam_size:
-            inactive[rows][len(pruned_candidates):] = 1
-            pruned_candidates += [pruned_candidates[len(pruned_candidates) - 1]] * (beam_size - len(pruned_candidates))
-        
-        
-        final_order[rows] = np.array(pruned_candidates) + rows.start
-    
-    final_ids = final_ids[final_order]
-    final_word_ids = final_word_ids[final_order]
-    final_seq_scores = final_seq_scores[final_order]
-    '''
-    #print(big_matrix.shape)
-
-    inactive[:big_matrix.shape[1]] = 0
+    # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
-        padding = np.zeros((big_matrix.shape[0], batch_size * beam_size - big_matrix.shape[1]))
-        big_matrix = np.concatenate((big_matrix, padding), axis=1)
-        inactive[big_matrix.shape[1]:] = 1
-        
-
-    best_ids[:] = (big_matrix[-3, :]).reshape(-1,)
-    best_word_ids[:] = (big_matrix[-2, :]).reshape(-1,)
-    seq_scores[:] = (big_matrix[-4, :]).reshape(-1, 1)
+        final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
+        final_matrix[:, parallel.astype(int)] = big_matrix
+        big_matrix = final_matrix
+    
+    assert big_matrix.shape[1] == batch_size * beam_size
+    
+    
+    best_ids[:] = (big_matrix[3, :]).reshape(-1,)
+    best_word_ids[:] = (big_matrix[4, :]).reshape(-1,)
+    seq_scores[:] = (big_matrix[2, :]).reshape(-1, 1)
 
     include_states.reorder(best_ids.asnumpy())
     include_states.consume(best_word_ids)
    
-   
     return best_ids, best_word_ids, seq_scores, include_states, inactive
-
-
-def _topk(beam_size: int,
-          inactive: mx.nd.NDArray,
-          scores: mx.nd.NDArray,
-          include_states: List[IncludeState],
-          best_ids: mx.nd.NDArray,
-          best_word_ids: mx.nd.NDArray,
-          sequence_scores: mx.nd.NDArray,
-          context: mx.context.Context) -> Tuple[np.array, np.array, np.array, List[AvoidState], mx.nd.NDArray]:
-    """
-    Builds a new topk list such that the beam contains hypotheses having completed different numbers of constraints.
-    These items are built from three different types: (1) the best items across the whole
-    scores matrix, (2) the set of words that must follow existing constraints, and (3) k-best items from each row.
-
-    :param beam_size: The length of the beam for each segment.
-    :param inactive: Array listing inactive rows (shape: (beam_size,)).
-    :param scores: The scores array (shape: (beam_size, target_vocab_size)).
-    :param include_states: The list of include states.
-    :param best_ids: The current list of best hypotheses (shape: (beam_size,)).
-    :param best_word_ids: The parallel list of best word IDs (shape: (beam_size,)).
-    :param sequence_scores: (shape: (beam_size, 1)).
-    :param context: The MXNet device context.
-    :return: A tuple containing the best hypothesis rows, the best hypothesis words, the scores,
-        the updated constrained hypotheses, and the updated set of inactive hypotheses.
-    """
-
-    num_constraints = max([state.unmet() for state in include_states])
-
-    candidates = set()
-    # (1) Add all of the top-k items (which were passed) in as long as they pass the constraints
-    for row, col, seq_score in zip(best_ids, best_word_ids, sequence_scores):
-        row = int(row.asscalar())
-        col = int(col.asscalar())
-        seq_score = float(seq_score.asscalar())
-        if include_states[row].is_valid(col):
-            #print("Huh! I'm consuming " + str(col) + " in _topk")
-            new_item = include_states[row].consume(col)
-            #print("yum yum. Now I want:" + str(new_item.wanted()))
-            cand = ConstrainedCandidate(row, col, seq_score, new_item)
-            candidates.add(cand)
-            
-
-    # For each hypothesis, we add (2) all the constraints that could follow it and
-    # (3) the best item (constrained or not) in that row
-    best_next = mx.nd.NDArray.argmin(scores, axis=1)
-    for row in range(beam_size):
-        if inactive[row]:
-            continue
-
-        hyp = include_states[row]
-        
-        # (2) add all the constraints that could extend this
-        nextones = hyp.wanted()
-        #print('hyp num ' + str(row) + ' says: I want ' + str(nextones))
-        # (3) add the single-best item after this (if it's valid)
-        col = int(best_next[row].asscalar())
-        if hyp.is_valid(col):
-            nextones.add(col)
-
-        # Now, create new candidates for each of these items
-        for col in nextones:
-            #print("Huh! Hpy num " + str(row) +" is consuming " + str(col) + " in _topk 2/3")
-            new_item = hyp.consume(col)
-            #print("yum yum. Now I want:" + str(new_item.wanted()))
-            score = scores[row, col].asscalar()
-            cand = ConstrainedCandidate(row, col, score, new_item)
-            candidates.add(cand)
-
-    # Sort the candidates. After allocating the beam across the banks, we will pick the top items
-    # for each bank from this list
-    sorted_candidates = sorted(candidates, key=attrgetter('score'))
-
-    # The number of hypotheses in each bank
-    counts = [0 for x in range(num_constraints + 1)]
-    for cand in sorted_candidates:
-        counts[cand.hypothesis.unmet()] += 1
-    #print('counts b4')
-    #print(counts)
-
-    # Adjust allocated bank sizes if there are too few candidates in any of them
-    bank_sizes = get_bank_sizes(num_constraints, beam_size, counts)
-
-    #print('counts after')
-    #print(bank_sizes)
-    # Sort the candidates into the allocated banks
-    pruned_candidates = []  # type: List[ConstrainedCandidate]
-    for i, cand in enumerate(sorted_candidates):
-        bank = cand.hypothesis.unmet()
-
-        if bank_sizes[bank] > 0:
-            pruned_candidates.append(cand)
-            bank_sizes[bank] -= 1
-
-    inactive[:len(pruned_candidates)] = 0
-
-    # Pad the beam so array assignment still works
-    if len(pruned_candidates) < beam_size:
-        inactive[len(pruned_candidates):] = 1
-        pruned_candidates += [pruned_candidates[len(pruned_candidates) - 1]] * (beam_size - len(pruned_candidates))
-
-    return (np.array([x.row for x in pruned_candidates]),
-            np.array([x.col for x in pruned_candidates]),
-            np.array([[x.score] for x in pruned_candidates]),
-            [x.hypothesis for x in pruned_candidates],
-            inactive)
 
 
 def main(args):
