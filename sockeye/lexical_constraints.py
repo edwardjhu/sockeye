@@ -4,7 +4,7 @@
 # use this file except in compliance with the License. A copy of the License
 # is located at
 #
-#      http://aws.amazon.com/apache2.0/
+#     http://aws.amazon.com/apache2.0/
 #
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -18,7 +18,6 @@ from typing import Dict, List, Optional, Tuple, Set
 
 import mxnet as mx
 import numpy as np
-import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,7 @@ class AvoidTrie:
                  raw_phrases: Optional[RawConstraintList] = None) -> None:
         self.final_ids = set()  # type: Set[int]
         self.children = {}  # type: Dict[int,'AvoidTrie']
+
         if raw_phrases:
             for phrase in raw_phrases:
                 self.add_phrase(phrase)
@@ -258,7 +258,7 @@ class IncludeTrie:
         phrase_count = len(self.final_ids)
         for child in self.children.values():
             phrase_count += len(child)
-        return phrase_count
+        return phrase_count + 1
     
     # from AvoidTrie -- not sure if needed for positive constraints
     '''
@@ -408,7 +408,7 @@ class IncludeState:
         """
         Return the number of unmet constraints.
         """
-        return 0 if not self.root else len(self.root)
+        return 0 if not self.state else len(self.state)
 
     def __str__(self) -> str:
         return str(self.state)
@@ -543,7 +543,7 @@ def topk(batch_size: int,
     :return: A tuple containing the best hypothesis rows, the best hypothesis words, the scores,
         the updated constrained hypotheses, and the updated set of inactive hypotheses.
     """
-    
+    # initialization 
     wanted_ids, wanted_word_ids = include_states.getWanted() # shape ((batch*beam) * target_vocab)
     finished_indices = include_states.getFinished() # shape ((batch*beam) * 1)
     good_hyp = mx.nd.zeros_like(scores, ctx=context)
@@ -563,7 +563,6 @@ def topk(batch_size: int,
     inf_matrix[:] = np.inf
     scores = mx.nd.where(good_hyp, scores, inf_matrix).asnumpy()
     # Masking inactive hypotheses
-    #print(inactive)
     scores[inactive.asnumpy() == 1, :] = np.inf
     
     final_ids, final_word_ids = np.where(scores != np.inf)
@@ -571,7 +570,6 @@ def topk(batch_size: int,
     final_seq_scores = scores[final_ids, final_word_ids]
     
     unmet = include_states.getUnmet()[final_ids]
-    
     big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
     
     
@@ -580,25 +578,36 @@ def topk(batch_size: int,
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
     
     def constructParallel(a):
-        _, ind = np.unique(a, return_index=True)
-        return np.arange(0, len(a)) - ind[np.digitize(a, a[ind]) - 1]
+        #_, ind = np.unique(a, return_index=True)
+        result = [0]
+        prev = a[0]
+        for num in a[1:]:
+            if num == prev:
+                result.append(result[-1] + 1)
+            else:
+                result.append(0)
+                prev = num
+
+        return np.array(result) #np.arange(0, len(a)) - ind[np.digitize(a, a[ind]) - 1]
 
     parallel = constructParallel(big_matrix[1, :])
 
-    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], parallel, big_matrix[0, :]))]
+    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel, big_matrix[0, :]))]
+    #print(big_matrix)
     parallel = constructParallel(big_matrix[0, :])
     
     # get rid of hypotheses that won't fit
     big_matrix = big_matrix[:, parallel < beam_size]
+    #print('after:',  big_matrix)
     inactive[:] = 1
     
-    #print(parallel.shape)
     parallel = parallel[parallel < beam_size] + big_matrix[0, :] * beam_size
     inactive[parallel] = 0
     
+    
     # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
-        final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
+        final_matrix = np.ones((big_matrix.shape[0], batch_size * beam_size))
         final_matrix[:, parallel.astype(int)] = big_matrix
         big_matrix = final_matrix
     
@@ -613,6 +622,7 @@ def topk(batch_size: int,
     include_states.consume(best_word_ids)
    
     return best_ids, best_word_ids, seq_scores, include_states, inactive
+
 
 
 def main(args):

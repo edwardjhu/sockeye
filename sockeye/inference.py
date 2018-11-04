@@ -1707,8 +1707,10 @@ class Translator:
         best_hyp_indices_list.append(best_hyp_indices)
         lengths = lengths.take(best_hyp_indices)
         scores_accumulated = scores_accumulated.take(best_hyp_indices)
+        
         if include_states:
             include_states.reorder(best_hyp_indices.asnumpy())
+        inactive = inactive[best_hyp_indices]
 
         all_best_hyp_indices = mx.nd.stack(*best_hyp_indices_list, axis=1)
         all_best_word_indices = mx.nd.stack(*best_word_indices_list, axis=1)
