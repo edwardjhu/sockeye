@@ -257,8 +257,8 @@ class IncludeTrie:
         """
         phrase_count = len(self.final_ids)
         for child in self.children.values():
-            phrase_count += len(child)
-        return phrase_count + 1
+            phrase_count += len(child) + 1
+        return phrase_count
     
     # from AvoidTrie -- not sure if needed for positive constraints
     '''
@@ -491,9 +491,9 @@ class IncludeBatch:
             
         #print('num of states:', len(self.states))
 
-        for (slot_id, slot) in enumerate([list(self.states[i].wanted()) for i in range(len(self.states))]):
-            for word_id in slot:
-                wanted_ids.append(slot_id)
+        for i in range(len(self.states)):
+            for word_id in list(self.states[i].wanted()):
+                wanted_ids.append(i)
                 wanted_word_ids.append(word_id)
 
         return (mx.nd.array(wanted_ids), mx.nd.array(wanted_word_ids))
@@ -553,7 +553,8 @@ def topk(batch_size: int,
     good_hyp[:, include_states.eos_id] *= finished_indices.as_in_context(context)
 
     # Source 2: words that advance the Tries
-    good_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
+    if wanted_ids.shape[0] > 0:
+        good_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
     
     # Source 3: best word per hypothesis
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
