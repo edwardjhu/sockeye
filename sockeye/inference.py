@@ -4,7 +4,7 @@
 # use this file except in compliance with the License. A copy of the License
 # is located at
 #
-#      http://aws.amazon.com/apache2.0/
+#     http://aws.amazon.com/apache2.0/
 #
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -85,15 +85,15 @@ class InferenceModel(model.SockeyeModel):
                                                                                            forced_max_output_len=forced_max_output_len)
         self.skip_softmax = skip_softmax
 
-        self.encoder_module = None    # type: Optional[mx.mod.BucketingModule]
-        self.encoder_default_bucket_key = None    # type: Optional[int]
-        self.decoder_module = None    # type: Optional[mx.mod.BucketingModule]
-        self.decoder_default_bucket_key = None    # type: Optional[Tuple[int, int]]
+        self.encoder_module = None  # type: Optional[mx.mod.BucketingModule]
+        self.encoder_default_bucket_key = None  # type: Optional[int]
+        self.decoder_module = None  # type: Optional[mx.mod.BucketingModule]
+        self.decoder_default_bucket_key = None  # type: Optional[Tuple[int, int]]
         self.decoder_return_logit_inputs = decoder_return_logit_inputs
 
         self.cache_output_layer_w_b = cache_output_layer_w_b
-        self.output_layer_w = None    # type: Optional[mx.nd.NDArray]
-        self.output_layer_b = None    # type: Optional[mx.nd.NDArray]
+        self.output_layer_w = None  # type: Optional[mx.nd.NDArray]
+        self.output_layer_b = None  # type: Optional[mx.nd.NDArray]
 
     @property
     def num_source_factors(self) -> int:
@@ -398,8 +398,8 @@ def load_models(context: mx.context.Context,
     logger.info("Loading %d model(s) from %s ...", len(model_folders), model_folders)
     load_time_start = time.time()
     models = []  # type: List[InferenceModel]
-    source_vocabs = []    # type: List[List[vocab.Vocab]]
-    target_vocabs = []    # type: List[vocab.Vocab]
+    source_vocabs = []  # type: List[List[vocab.Vocab]]
+    target_vocabs = []  # type: List[vocab.Vocab]
 
     if checkpoints is None:
         checkpoints = [None] * len(model_folders)
@@ -1094,7 +1094,6 @@ class Translator:
         self._prune_hyps = PruneHypotheses(threshold=self.beam_prune, beam_size=self.beam_size)
         self._prune_hyps.initialize(ctx=self.context)
         self._prune_hyps.hybridize(static_alloc=True, static_shape=True)
-            
 
         self.global_include_trie = None
         if include_list is not None:
@@ -1556,20 +1555,20 @@ class Translator:
 
         # (0) encode source sentence, returns a list
         model_states = self._encode(source, source_length)
-        
+
         # (don't need this for now) Initialize the beam to track constraint sets, where target-side lexical constraints are present
         #constraints = constrained.init_batch(raw_constraint_list, self.beam_size, self.start_id,
         #                                     self.vocab_target[C.EOS_SYMBOL])
 
         include_states = None
         if self.global_include_trie or any(raw_include_list):
-            include_states = constrained.IncludeBatch(self.batch_size, self.beam_size,
-                                                  include_list=raw_include_list,
-                                                  global_include_trie=self.global_include_trie,
-                                                  eos_id=self.vocab_target[C.EOS_SYMBOL])
+            include_states = constrained.IncludeBatch(self.batch_size,
+                                                      self.beam_size,
+                                                      include_list=raw_include_list,
+                                                      global_include_trie=self.global_include_trie,
+                                                      eos_id=self.vocab_target[C.EOS_SYMBOL])
             include_states.consume(best_word_indices)
-        
-        
+
         if self.global_avoid_trie or any(raw_avoid_list):
             avoid_states = constrained.AvoidBatch(self.batch_size, self.beam_size,
                                                   avoid_list=raw_avoid_list,
