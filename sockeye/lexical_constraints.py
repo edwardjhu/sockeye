@@ -467,7 +467,7 @@ class IncludeBatch:
         :param indices: An mx.nd.NDArray containing indices of hypotheses to select.
         """
         if self.states:
-            self.states = [self.states[x] for x in indices]
+            self.states = [self.states[x.asscalar()] for x in indices]
 
 
     def consume(self, word_ids: mx.nd.NDArray) -> None:
@@ -555,70 +555,78 @@ def topk(batch_size: int,
     # Source 2: words that advance the Tries
     good_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
     
-    # Source 2: best word per hypothesis
+    # Source 3: best word per hypothesis
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
     good_hyp[mx.nd.arange(best_next_idx.shape[0], ctx=context), best_next_idx] = 1
- 
+    
+    # marking everything else as np.inf
     inf_matrix = mx.nd.zeros_like(scores, ctx=context)
     inf_matrix[:] = np.inf
     scores = mx.nd.where(good_hyp, scores, inf_matrix).asnumpy()
-    # Masking inactive hypotheses
+    # Masking inactive hypotheses as np.inf as well
     scores[inactive.asnumpy() == 1, :] = np.inf
     
+    # retrieve the indices & seq_scores
     final_ids, final_word_ids = np.where(scores != np.inf)
     sent_ids, _ = np.where(scores.reshape((batch_size, -1)) != np.inf)
     final_seq_scores = scores[final_ids, final_word_ids]
     
+    # assemble the big_matrix
     unmet = include_states.getUnmet()[final_ids]
     big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
     
-    
-    # update unmet 
+    # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
     big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
+
+    # sort big_matrix
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
     
-    def constructParallel(a):
-        #_, ind = np.unique(a, return_index=True)
+    def constructParallel(arr):
+        '''
+        Construct a parallel array like [0, 1, 2, 0, 1, 2] to arr ([0, 0, 0, 1, 1, 1])
+        This is equivalent to, given that arr is non-decreasing:
+        
         result = [0]
-        prev = a[0]
-        for num in a[1:]:
+        prev = arr[0]
+        for num in arr[1:]:
             if num == prev:
                 result.append(result[-1] + 1)
             else:
                 result.append(0)
                 prev = num
-
-        return np.array(result) #np.arange(0, len(a)) - ind[np.digitize(a, a[ind]) - 1]
-
-    parallel = constructParallel(big_matrix[1, :])
-
-    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel, big_matrix[0, :]))]
-    #print(big_matrix)
-    parallel = constructParallel(big_matrix[0, :])
+        return result
+        '''
+        _, ind = np.unique(arr, return_index=True)
+        return np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]
+    
+    # core DBA algorithm
+    parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * np.max(big_matrix[1, :])) # make sure the orginal array (from which we construct the parallel) is non-decreasing
+    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
     # get rid of hypotheses that won't fit
-    big_matrix = big_matrix[:, parallel < beam_size]
-    #print('after:',  big_matrix)
+    parallel_to_sentid = constructParallel(big_matrix[0, :]) # number each hypthesis under the same ref sent
+    big_matrix = big_matrix[:, parallel_to_sentid < beam_size] 
+    to_keep_ids = parallel_to_sentid[parallel_to_sentid < beam_size] + big_matrix[0, :] * beam_size
+    # and update inactive accordingly
     inactive[:] = 1
-    
-    parallel = parallel[parallel < beam_size] + big_matrix[0, :] * beam_size
-    inactive[parallel] = 0
+    inactive[to_keep_ids] = 0
     
     
     # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.ones((big_matrix.shape[0], batch_size * beam_size))
-        final_matrix[:, parallel.astype(int)] = big_matrix
+        final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
     
+    # just to make sure...
     assert big_matrix.shape[1] == batch_size * beam_size
     
+    best_ids[:] = (big_matrix[3, :]).reshape(-1,) # retrieve best_ids from big_matrix
+    best_word_ids[:] = (big_matrix[4, :]).reshape(-1,) # retrieve best_word_ids from big_matrix
+    seq_scores[:] = (big_matrix[2, :]).reshape(-1, 1) # retrieve seq_scores from big_matrix
     
-    best_ids[:] = (big_matrix[3, :]).reshape(-1,)
-    best_word_ids[:] = (big_matrix[4, :]).reshape(-1,)
-    seq_scores[:] = (big_matrix[2, :]).reshape(-1, 1)
-
-    include_states.reorder(best_ids.asnumpy())
+    # update include_states (IncludeBatch)
+    include_states.reorder(best_ids)
     include_states.consume(best_word_ids)
    
     return best_ids, best_word_ids, seq_scores, include_states, inactive

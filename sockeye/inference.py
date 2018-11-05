@@ -1709,7 +1709,7 @@ class Translator:
         scores_accumulated = scores_accumulated.take(best_hyp_indices)
         
         if include_states:
-            include_states.reorder(best_hyp_indices.asnumpy())
+            include_states.reorder(best_hyp_indices)
         inactive = inactive[best_hyp_indices]
 
         all_best_hyp_indices = mx.nd.stack(*best_hyp_indices_list, axis=1)
