@@ -260,18 +260,7 @@ class IncludeTrie:
             phrase_count += len(child) + 1
         return phrase_count
     
-    # from AvoidTrie -- not sure if needed for positive constraints
-    '''
-    def add_trie(self,
-                 trie: 'IncludeTrie',
-                 phrase: Optional[List[int]] = None) -> None:
-        self.final_ids |= trie.final()
-        for child_id, child in trie.children.items():
-            if child_id not in self.children:
-                self.children[child_id] = AvoidTrie()
-            self.children[child_id].add_trie(child)
-    '''
-    def add_phrase(self,
+      def add_phrase(self,
                    phrase: List[int]) -> None:
         """
         Recursively adds a phrase to this trie node.
@@ -428,8 +417,7 @@ class IncludeBatch:
                  batch_size: int,
                  beam_size: int,
                  eos_id: int,
-                 include_list: Optional[List[RawConstraintList]] = None,
-                 global_include_trie: Optional[IncludeTrie] = None) -> None:
+                 include_list: Optional[List[RawConstraintList]] = None) -> None:
 
         #print('haha! I have a beam size of ' + str(beam_size) + 'and a batch size of ' + str(batch_size), include_list)
         
@@ -437,22 +425,11 @@ class IncludeBatch:
         self.wanted_indices = []
         for _ in range(batch_size * beam_size):
             self.wanted_indices.append([])
-        # Store the global trie for each hypothesis
-        if global_include_trie is not None:
-            for token in global_include_trie:
-                self.states = [IncludeState(global_include_trie, eos_id=eos_id)] * batch_size * beam_size
-
 
         # Store the sentence-level tries for each item in their portions of the beam
         if include_list is not None:
-            if self.states != []:
-                for (i, raw_phrases) in enumerate(include_list):
-                    for j in range(beam_size):
-                        for phrase in raw_phrases:
-                            self.states[i*beam_size+j].root.add_phrase(phrase)
-            else:
-                for (i, raw_phrases) in enumerate(include_list):
-                    self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
+            for (i, raw_phrases) in enumerate(include_list):
+                self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
         '''
         # initialize wanted        
         for i in range(len(self.states)):
@@ -481,7 +458,7 @@ class IncludeBatch:
             self.states[i] = (self.states[i]).consume(word_id)
 
         #print('now I want:', self.getWanted())
-    def getWanted(self) -> (mx.nd.NDArray, mx.nd.NDArray):
+    def get_wanted(self) -> (mx.nd.NDArray, mx.nd.NDArray):
         """
         Return the next wanted word id as a 2d list.
         """
@@ -498,7 +475,7 @@ class IncludeBatch:
 
         return (mx.nd.array(wanted_ids), mx.nd.array(wanted_word_ids))
     
-    def getFinished(self) -> mx.nd.NDArray:
+    def get_finished(self) -> mx.nd.NDArray:
         """
         Return the next wanted word id in a 2d multi-hot matrix.
         """
@@ -508,7 +485,7 @@ class IncludeBatch:
             result.append(1 if self.states[i].root == None else 0)
         return mx.nd.array(result)
 
-    def getUnmet(self) -> mx.nd.NDArray:
+    def get_unmet(self) -> mx.nd.NDArray:
         """
         Return the number of unmet constraints for each tracked hypothesis.
         """
@@ -544,8 +521,8 @@ def topk(batch_size: int,
         the updated constrained hypotheses, and the updated set of inactive hypotheses.
     """
     # initialization 
-    wanted_ids, wanted_word_ids = include_states.getWanted() # shape ((batch*beam) * target_vocab)
-    finished_indices = include_states.getFinished() # shape ((batch*beam) * 1)
+    wanted_ids, wanted_word_ids = include_states.get_wanted() # shape ((batch*beam) * target_vocab)
+    finished_indices = include_states.get_finished() # shape ((batch*beam) * 1)
     good_hyp = mx.nd.zeros_like(scores, ctx=context)
    
     # Source 1: Global Top K
@@ -573,7 +550,7 @@ def topk(batch_size: int,
     final_seq_scores = scores[final_ids, final_word_ids]
     
     # assemble the big_matrix
-    unmet = include_states.getUnmet()[final_ids]
+    unmet = include_states.get_unmet()[final_ids]
     big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
     
     # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
