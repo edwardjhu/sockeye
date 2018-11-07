@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Tuple, Set
 import mxnet as mx
 import numpy as np
 
+from . import constants as C
+
 logger = logging.getLogger(__name__)
 
 # Represents a list of raw constraints for a sentence. Each constraint is a list of target-word IDs.
@@ -260,7 +262,7 @@ class IncludeTrie:
             phrase_count += len(child) + 1
         return phrase_count
     
-      def add_phrase(self,
+    def add_phrase(self,
                    phrase: List[int]) -> None:
         """
         Recursively adds a phrase to this trie node.
@@ -548,13 +550,27 @@ def topk(batch_size: int,
     final_ids, final_word_ids = np.where(scores != np.inf)
     sent_ids, _ = np.where(scores.reshape((batch_size, -1)) != np.inf)
     final_seq_scores = scores[final_ids, final_word_ids]
+    #num_finished = np.count_nonzero(np == C.PAD_ID)
+    #print(final_word_ids.shape, num_finished)
     
     # assemble the big_matrix
     unmet = include_states.get_unmet()[final_ids]
-    big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
+    big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))    
     
     # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
-    big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
+    
+    
+    if wanted_ids.shape[0] > 0:
+        bm_entries = mx.nd.stack(mx.nd.array(final_ids, ctx=context), mx.nd.array(final_word_ids, ctx=context)).transpose()
+        _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
+        wanted_entries = mx.nd.stack(wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)).transpose()
+        
+        #big_matrix[1, :] -= (wanted_entries == bm_entries[:, None]).all(-1).any(1).astype(int)
+        big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()
+    
+
+    
+    #big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
 
     # sort big_matrix
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
@@ -578,7 +594,8 @@ def topk(batch_size: int,
         return np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]
     
     # core DBA algorithm
-    parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * np.max(big_matrix[1, :])) # make sure the orginal array (from which we construct the parallel) is non-decreasing
+    #assert(np.all(np.diff(big_matrix[1, :] + big_matrix[0, :] * np.max(big_matrix[1, :])) >= 0))
+    parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array (from which we construct the parallel) is non-decreasing
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
     # get rid of hypotheses that won't fit
@@ -592,7 +609,7 @@ def topk(batch_size: int,
     
     # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
-        final_matrix = np.ones((big_matrix.shape[0], batch_size * beam_size))
+        final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
         final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
     
