@@ -419,7 +419,8 @@ class IncludeBatch:
                  batch_size: int,
                  beam_size: int,
                  eos_id: int,
-                 include_list: Optional[List[RawConstraintList]] = None) -> None:
+                 include_list: Optional[List[RawConstraintList]] = None,
+                 ctx = None) -> None:
 
         #print('haha! I have a beam size of ' + str(beam_size) + 'and a batch size of ' + str(batch_size), include_list)
         
@@ -432,6 +433,8 @@ class IncludeBatch:
         if include_list is not None:
             for (i, raw_phrases) in enumerate(include_list):
                 self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
+
+        self.context = ctx
         '''
         # initialize wanted        
         for i in range(len(self.states)):
@@ -475,7 +478,7 @@ class IncludeBatch:
                 wanted_ids.append(i)
                 wanted_word_ids.append(word_id)
 
-        return (mx.nd.array(wanted_ids), mx.nd.array(wanted_word_ids))
+        return (mx.nd.array(wanted_ids, ctx=self.context), mx.nd.array(wanted_word_ids, ctx=self.context))
     
     def get_finished(self) -> mx.nd.NDArray:
         """
@@ -485,7 +488,7 @@ class IncludeBatch:
         
         for i in range(len(self.states)):
             result.append(1 if self.states[i].root == None else 0)
-        return mx.nd.array(result)
+        return mx.nd.array(result, ctx=self.context)
 
     def get_unmet(self) -> mx.nd.NDArray:
         """
@@ -494,7 +497,7 @@ class IncludeBatch:
         result = []
         for i in range(len(self.states)):
             result.append(self.states[i].unmet())
-        return np.array(result)
+        return mx.nd.array(result, ctx=self.context)
 
 def topk(batch_size: int,
          beam_size: int,
@@ -525,15 +528,15 @@ def topk(batch_size: int,
     # initialization 
     wanted_ids, wanted_word_ids = include_states.get_wanted() # shape ((batch*beam) * target_vocab)
     finished_indices = include_states.get_finished() # shape ((batch*beam) * 1)
-    good_hyp = mx.nd.zeros_like(scores, ctx=context)
+    good_hyp = mx.nd.zeros_like(scores, ctx=context, dtype='int8')
    
     # Source 1: Global Top K
     good_hyp[best_ids, best_word_ids] = 1
-    good_hyp[:, include_states.eos_id] *= finished_indices.as_in_context(context)
+    good_hyp[:, include_states.eos_id] *= finished_indices
 
     # Source 2: words that advance the Tries
     if wanted_ids.shape[0] > 0:
-        good_hyp[wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)] = 1
+        good_hyp[wanted_ids, wanted_word_ids] = 1
     
     # Source 3: best word per hypothesis
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
@@ -542,28 +545,48 @@ def topk(batch_size: int,
     # marking everything else as np.inf
     inf_matrix = mx.nd.zeros_like(scores, ctx=context)
     inf_matrix[:] = np.inf
-    scores = mx.nd.where(good_hyp, scores, inf_matrix).asnumpy()
+    
+    # making sure we don't choose any inactive hypotheses
+    good_hyp = mx.nd.multiply(good_hyp, mx.nd.cast((-inactive+1), dtype='float32').reshape(-1, 1))
+
+
+    scores = mx.nd.where(good_hyp, scores, inf_matrix)
+    
+    '''
     # Masking inactive hypotheses as np.inf as well
     scores[inactive.asnumpy() == 1, :] = np.inf
-    
+    '''
+
+    def nonzero(mat):
+        total = int(mx.nd.sum(mat).asscalar())
+        indices = mx.nd.unravel_index(mx.nd.topk(mat, k=total, axis=None), shape=mat.shape)
+        return indices[0, :], indices[1, :]
+
+    '''
     # retrieve the indices & seq_scores
     final_ids, final_word_ids = np.where(scores != np.inf)
     sent_ids, _ = np.where(scores.reshape((batch_size, -1)) != np.inf)
     final_seq_scores = scores[final_ids, final_word_ids]
     #num_finished = np.count_nonzero(np == C.PAD_ID)
     #print(final_word_ids.shape, num_finished)
-    
+    '''
+
+    final_ids, final_word_ids = nonzero(scores != np.inf)
+    sent_ids, _ = nonzero(scores.reshape((batch_size, -1)) != np.inf)
+    final_seq_scores = scores[final_ids, final_word_ids]
+
     # assemble the big_matrix
     unmet = include_states.get_unmet()[final_ids]
-    big_matrix = np.stack((sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))    
+#    print(sent_ids.shape, unmet.shape, final_seq_scores.shape, final_ids.shape, final_word_ids.shape)
+    big_matrix = np.stack((sent_ids.asnumpy(), unmet.asnumpy(), final_seq_scores.asnumpy(), final_ids.asnumpy(), final_word_ids.asnumpy()))    
     
     # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
     
     
     if wanted_ids.shape[0] > 0:
-        bm_entries = mx.nd.stack(mx.nd.array(final_ids, ctx=context), mx.nd.array(final_word_ids, ctx=context)).transpose()
+        bm_entries = mx.nd.stack(final_ids, final_word_ids).transpose()
         _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
-        wanted_entries = mx.nd.stack(wanted_ids.as_in_context(context), wanted_word_ids.as_in_context(context)).transpose()
+        wanted_entries = mx.nd.stack(wanted_ids, wanted_word_ids).transpose()
         
         #big_matrix[1, :] -= (wanted_entries == bm_entries[:, None]).all(-1).any(1).astype(int)
         big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()

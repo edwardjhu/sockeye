@@ -1554,7 +1554,8 @@ class Translator:
             include_states = constrained.IncludeBatch(self.batch_size,
                                                       self.beam_size,
                                                       include_list=raw_include_list,
-                                                      eos_id=self.vocab_target[C.EOS_SYMBOL])
+                                                      eos_id=self.vocab_target[C.EOS_SYMBOL],
+                                                      ctx=self.context)
             include_states.consume(best_word_indices)
 
         if self.global_avoid_trie or any(raw_avoid_list):
@@ -1737,7 +1738,7 @@ class Translator:
 
         if include_states:
             # For constrained decoding, select from items that have met all constraints (might not be finished)
-            unmet = include_states.get_unmet()  # for IncludeBatch, 
+            unmet = include_states.get_unmet().asnumpy()  # for IncludeBatch, 
             filtered = np.where(unmet == 0, seq_scores.flatten(), np.inf)
             filtered = filtered.reshape((self.batch_size, self.beam_size))
             best_ids += np.argmin(filtered, axis=1).astype('int32')
