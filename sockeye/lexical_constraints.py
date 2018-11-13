@@ -507,7 +507,8 @@ def topk(batch_size: int,
          best_ids: mx.nd.NDArray,
          best_word_ids: mx.nd.NDArray,
          seq_scores: mx.nd.NDArray,
-         context: mx.context.Context) -> Tuple[np.array, np.array, np.array, AvoidBatch, mx.nd.NDArray]:
+         context: mx.context.Context,
+         beam_prune: float) -> Tuple[np.array, np.array, np.array, AvoidBatch, mx.nd.NDArray]:
     """
     Builds a new topk list such that the beam contains hypotheses having completed different numbers of constraints.
     These items are built from three different types: (1) the best items across the whole
@@ -580,24 +581,6 @@ def topk(batch_size: int,
 #    print(sent_ids.shape, unmet.shape, final_seq_scores.shape, final_ids.shape, final_word_ids.shape)
     big_matrix = np.stack((sent_ids.asnumpy(), unmet.asnumpy(), final_seq_scores.asnumpy(), final_ids.asnumpy(), final_word_ids.asnumpy()))    
     
-    # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
-    
-    
-    if wanted_ids.shape[0] > 0:
-        bm_entries = mx.nd.stack(final_ids, final_word_ids).transpose()
-        _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
-        wanted_entries = mx.nd.stack(wanted_ids, wanted_word_ids).transpose()
-        
-        #big_matrix[1, :] -= (wanted_entries == bm_entries[:, None]).all(-1).any(1).astype(int)
-        big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()
-    
-
-    
-    #big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
-
-    # sort big_matrix
-    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
-    
     def constructParallel(arr):
         '''
         Construct a parallel array like [0, 1, 2, 0, 1, 2] to arr ([0, 0, 0, 1, 1, 1])
@@ -614,7 +597,37 @@ def topk(batch_size: int,
         return result
         '''
         _, ind = np.unique(arr, return_index=True)
-        return np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]
+        return (np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]).astype(int)
+
+    
+    # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
+    if wanted_ids.shape[0] > 0:
+        bm_entries = mx.nd.array(np.stack((big_matrix[3, :], big_matrix[4, :])).transpose(), ctx=context)
+        _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
+        wanted_entries = mx.nd.stack(wanted_ids, wanted_word_ids).transpose()
+        
+        #big_matrix[1, :] -= (wanted_entries == bm_entries[:, None]).all(-1).any(1).astype(int)
+        big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()
+    
+
+    
+    #big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
+
+    # sort big_matrix
+    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
+   
+    #print('iteration')
+    # beam prune
+    if beam_prune > 0 and np.any(big_matrix[1, :] == 0) :
+        largest_sent = np.bincount(big_matrix[0, :].astype(int)).max()
+        seq_mat = np.full((batch_size, largest_sent), np.inf)
+        seq_mat[(big_matrix[0, big_matrix[1, :] == 0]).astype(int), \
+                 constructParallel(big_matrix[0, big_matrix[1, :] == 0])] = big_matrix[2, big_matrix[1, :] == 0]
+        best_finished = np.amin(seq_mat, axis=1).reshape(-1)
+        #print(best_finished)
+        #print(big_matrix.shape)
+        big_matrix = big_matrix[:, big_matrix[2, :] < best_finished[(big_matrix[0, :]).astype(int)] + beam_prune]
+        #print(big_matrix.shape)
     
     # core DBA algorithm
     #assert(np.all(np.diff(big_matrix[1, :] + big_matrix[0, :] * np.max(big_matrix[1, :])) >= 0))
