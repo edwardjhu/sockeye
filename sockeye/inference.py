@@ -1088,10 +1088,12 @@ class Translator:
                                                            length_penalty_beta=self.length_penalty.beta)
         self._update_finished.initialize(ctx=self.context)
         self._update_finished.hybridize(static_alloc=True, static_shape=True)
-
+        
+        '''
         self._prune_hyps = PruneHypotheses(threshold=self.beam_prune, beam_size=self.beam_size)
         self._prune_hyps.initialize(ctx=self.context)
         self._prune_hyps.hybridize(static_alloc=True, static_shape=True)
+        '''
 
         self.global_avoid_trie = None
         if avoid_list is not None:

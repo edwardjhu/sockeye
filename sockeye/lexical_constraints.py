@@ -255,7 +255,7 @@ class IncludeTrie:
 
     def __len__(self) -> int:
         """
-        Returns the number of avoid phrases represented in the trie.
+        Returns the number of include phrases represented in the trie.
         """
         phrase_count = len(self.final_ids)
         for child in self.children.values():
@@ -269,7 +269,9 @@ class IncludeTrie:
 
         :param phrase: A list of word IDs to add to this trie node.
         """
-        if len(phrase) == 1:
+        if len(phrase) == 0:
+            return
+        elif len(phrase) == 1:
             self.final_ids.add(phrase[0])
         else:
             next_word = phrase[0]
@@ -340,12 +342,14 @@ class IncludeState:
                  include_trie: IncludeTrie,
                  eos_id: int,
                  state: IncludeTrie = None,
-                 current_phrase: List[int] = []) -> None:
+                 current_phrase: List[int] = [],
+                 partial: int = 0) -> None:
 
         self.root = include_trie
         self.state = state if state else self.root
         self.current_phrase = current_phrase  # progress we made satisfying one of the constraints
         self.eos_id = eos_id
+        self.partial = partial
     def consume(self, word_id: int) -> 'IncludeState':
         """
         Consumes a word, and updates the state based on it. Returns new objects on a state change.
@@ -370,10 +374,14 @@ class IncludeState:
             next_state = self.state.step(word_id)
             # go further or go home
             if next_state:
-                return IncludeState(new_root, self.eos_id, state=next_state, current_phrase=new_current_phrase)
+                return IncludeState(new_root, self.eos_id, state=next_state, \
+                                    current_phrase=new_current_phrase, \
+                                    partial=self.partial+1)
             return IncludeState(new_root, self.eos_id, state=new_root)
         elif word_id in self.state.children.keys():
-            return IncludeState(self.root, self.eos_id, state=self.state.step(word_id), current_phrase=self.current_phrase + [word_id])
+            return IncludeState(self.root, self.eos_id, state=self.state.step(word_id), \
+                                current_phrase=self.current_phrase + [word_id], \
+                                partial=self.partial+1)
         elif self.state != self.root:
             return IncludeState(self.root, self.eos_id, state=self.root).consume(word_id)
         return self
@@ -393,13 +401,13 @@ class IncludeState:
         """
         if not self.root:
             return set()
-        return set([i for i in self.state.final()] + [i for i in self.state.children])
+        return set(self.state.final() | self.state.children.keys())
     
     def unmet(self) -> int:
         """
         Return the number of unmet constraints.
         """
-        return 0 if not self.state else len(self.state)
+        return 0 if not self.root else len(self.root) - self.partial
 
     def __str__(self) -> str:
         return str(self.state)
@@ -474,7 +482,7 @@ class IncludeBatch:
         #print('num of states:', len(self.states))
 
         for i in range(len(self.states)):
-            for word_id in list(self.states[i].wanted()):
+            for word_id in self.states[i].wanted():
                 wanted_ids.append(i)
                 wanted_word_ids.append(word_id)
 
@@ -553,24 +561,10 @@ def topk(batch_size: int,
 
     scores = mx.nd.where(good_hyp, scores, inf_matrix)
     
-    '''
-    # Masking inactive hypotheses as np.inf as well
-    scores[inactive.asnumpy() == 1, :] = np.inf
-    '''
-
     def nonzero(mat):
         total = int(mx.nd.sum(mat).asscalar())
         indices = mx.nd.unravel_index(mx.nd.topk(mat, k=total, axis=None), shape=mat.shape)
         return indices[0, :], indices[1, :]
-
-    '''
-    # retrieve the indices & seq_scores
-    final_ids, final_word_ids = np.where(scores != np.inf)
-    sent_ids, _ = np.where(scores.reshape((batch_size, -1)) != np.inf)
-    final_seq_scores = scores[final_ids, final_word_ids]
-    #num_finished = np.count_nonzero(np == C.PAD_ID)
-    #print(final_word_ids.shape, num_finished)
-    '''
 
     final_ids, final_word_ids = nonzero(scores != np.inf)
     sent_ids, _ = nonzero(scores.reshape((batch_size, -1)) != np.inf)
@@ -578,7 +572,6 @@ def topk(batch_size: int,
 
     # assemble the big_matrix
     unmet = include_states.get_unmet()[final_ids]
-#    print(sent_ids.shape, unmet.shape, final_seq_scores.shape, final_ids.shape, final_word_ids.shape)
     big_matrix = np.stack((sent_ids.asnumpy(), unmet.asnumpy(), final_seq_scores.asnumpy(), final_ids.asnumpy(), final_word_ids.asnumpy()))    
     
     def constructParallel(arr):
@@ -599,38 +592,29 @@ def topk(batch_size: int,
         _, ind = np.unique(arr, return_index=True)
         return (np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]).astype(int)
 
-    
     # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
     if wanted_ids.shape[0] > 0:
-        bm_entries = mx.nd.array(np.stack((big_matrix[3, :], big_matrix[4, :])).transpose(), ctx=context)
+        bm_entries = mx.nd.stack(final_ids, final_word_ids).transpose()
         _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
         wanted_entries = mx.nd.stack(wanted_ids, wanted_word_ids).transpose()
-        
-        #big_matrix[1, :] -= (wanted_entries == bm_entries[:, None]).all(-1).any(1).astype(int)
         big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()
-    
-
-    
-    #big_matrix[1, :] -= np.isin(big_matrix[3,:], wanted_ids.asnumpy()).astype(int) * np.isin(big_matrix[4,:], wanted_word_ids.asnumpy()).astype(int)
 
     # sort big_matrix
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
    
-    #print('iteration')
     # beam prune
-    if beam_prune > 0 and np.any(big_matrix[1, :] == 0) :
-        largest_sent = np.bincount(big_matrix[0, :].astype(int)).max()
-        seq_mat = np.full((batch_size, largest_sent), np.inf)
-        seq_mat[(big_matrix[0, big_matrix[1, :] == 0]).astype(int), \
-                 constructParallel(big_matrix[0, big_matrix[1, :] == 0])] = big_matrix[2, big_matrix[1, :] == 0]
+    if beam_prune > 0 and np.any(big_matrix[1, :] == 0):
+        finished_entries = big_matrix[0, big_matrix[1, :] == 0].astype(int)
+        seq_mat = np.full((batch_size, np.bincount(finished_entries).max()), np.inf)
+        seq_mat[finished_entries, \
+                 constructParallel(finished_entries)] = big_matrix[2, big_matrix[1, :] == 0]
         best_finished = np.amin(seq_mat, axis=1).reshape(-1)
-        #print(best_finished)
-        #print(big_matrix.shape)
-        big_matrix = big_matrix[:, big_matrix[2, :] < best_finished[(big_matrix[0, :]).astype(int)] + beam_prune]
-        #print(big_matrix.shape)
+        to_keep_prune = (big_matrix[2, :] - best_finished[(big_matrix[0, :]).astype(int)]) < beam_prune
+        big_matrix = big_matrix[:, to_keep_prune]
+    
+    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
     
     # core DBA algorithm
-    #assert(np.all(np.diff(big_matrix[1, :] + big_matrix[0, :] * np.max(big_matrix[1, :])) >= 0))
     parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array (from which we construct the parallel) is non-decreasing
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
@@ -646,11 +630,9 @@ def topk(batch_size: int,
     # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
+        final_matrix[2, :] = np.inf
         final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
-    
-    # just to make sure...
-    assert big_matrix.shape[1] == batch_size * beam_size
     
     best_ids[:] = (big_matrix[3, :]).reshape(-1,) # retrieve best_ids from big_matrix
     best_word_ids[:] = (big_matrix[4, :]).reshape(-1,) # retrieve best_word_ids from big_matrix
