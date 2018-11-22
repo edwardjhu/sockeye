@@ -73,7 +73,9 @@ class AvoidTrie:
 
         :param phrase: A list of word IDs to add to this trie node.
         """
-        if len(phrase) == 1:
+        if len(phrase) == 0:
+            return
+        elif len(phrase) == 1:
             self.final_ids.add(phrase[0])
         else:
             next_word = phrase[0]
@@ -110,10 +112,10 @@ class AvoidState:
     """
     def __init__(self,
                  avoid_trie: AvoidTrie,
-                 state: AvoidTrie = None) -> None:
+                 states: List[AvoidTrie] = None) -> None:
 
         self.root = avoid_trie
-        self.state = state if state else self.root
+        self.states = states if states else []
 
     def consume(self, word_id: int) -> 'AvoidState':
         """
@@ -130,14 +132,13 @@ class AvoidState:
 
         :param word_id: The word that was just generated.
         """
-        if word_id in self.state.children:
-            return AvoidState(self.root, self.state.step(word_id))
-        elif word_id in self.root.children:
-            return AvoidState(self.root, self.root.step(word_id))
-        elif self.state != self.root:
-            return AvoidState(self.root, self.root)
-        else:
-            return self
+        new_states = []
+        for state in self.states:
+            if word_id in state.children:
+                new_states.append(state.step(word_id))
+        if word_id in self.root.children:
+            new_states.append(self.root.step(word_id))
+        return AvoidState(self.root, new_states)
 
     def avoid(self) -> Set[int]:
         """
@@ -146,10 +147,10 @@ class AvoidState:
 
         :return: A set of integers representing words that must not be generated next by this hypothesis.
         """
-        return self.root.final() | self.state.final()
+        return self.root.final().union(*[state.final() for state in self.states])
 
     def __str__(self) -> str:
-        return str(self.state)
+        return str([str(state) for state in self.states])
 
 
 class AvoidBatch:
@@ -257,9 +258,9 @@ class IncludeTrie:
         """
         Returns the number of include phrases represented in the trie.
         """
-        phrase_count = len(self.final_ids)
+        phrase_count = len(self.final_ids) + len(self.children.keys())
         for child in self.children.values():
-            phrase_count += len(child) + 1
+            phrase_count += len(child)
         return phrase_count
     
     def add_phrase(self,
@@ -341,12 +342,12 @@ class IncludeState:
     def __init__(self,
                  include_trie: IncludeTrie,
                  eos_id: int,
-                 state: IncludeTrie = None,
-                 current_phrase: List[int] = [],
-                 partial: int = 0) -> None:
+                 states: List[IncludeTrie] = [],
+                 current_phrase: List[List[int]] = [],
+                 partial: List[int] = []) -> None:
 
         self.root = include_trie
-        self.state = state if state else self.root
+        self.states = states
         self.current_phrase = current_phrase  # progress we made satisfying one of the constraints
         self.eos_id = eos_id
         self.partial = partial
@@ -365,26 +366,31 @@ class IncludeState:
         # we are done
         if self.root == None:
             return self
-        if word_id in self.state.final():
-            # bingo! we fnished a constraint
-            new_current_phrase = self.current_phrase + [word_id]
-            new_root = self.root.prune(new_current_phrase)
+        new_states = []
+        new_phrase = []
+        new_partial = []
+        new_root = self.root
+        for i, state in enumerate(self.states):
+            if word_id in state.final():
+                # bingo! we fnished a constraint
+                new_root = new_root.prune(self.current_phrase[i] + [word_id])
+                if not new_root:
+                    return IncludeState(None, self.eos_id)
+            if word_id in state.children:
+                new_states.append(state.step(word_id))
+                new_phrase.append(self.current_phrase[i] + [word_id])
+                new_partial.append(self.partial[i] + 1)
+        
+        if word_id in new_root.final():
+            new_root = new_root.prune([word_id])
             if not new_root:
-                return IncludeState(None, None)
-            next_state = self.state.step(word_id)
-            # go further or go home
-            if next_state:
-                return IncludeState(new_root, self.eos_id, state=next_state, \
-                                    current_phrase=new_current_phrase, \
-                                    partial=self.partial+1)
-            return IncludeState(new_root, self.eos_id, state=new_root)
-        elif word_id in self.state.children.keys():
-            return IncludeState(self.root, self.eos_id, state=self.state.step(word_id), \
-                                current_phrase=self.current_phrase + [word_id], \
-                                partial=self.partial+1)
-        elif self.state != self.root:
-            return IncludeState(self.root, self.eos_id, state=self.root).consume(word_id)
-        return self
+                return IncludeState(None, self.eos_id)
+        if word_id in new_root.children:
+            new_states.append(new_root.step(word_id))
+            new_phrase.append([word_id])
+            new_partial.append(1)
+        
+        return IncludeState(new_root, self.eos_id, states=new_states, partial=new_partial, current_phrase=new_phrase)
     
     def is_valid(self, wordid) -> bool:
         """
@@ -393,7 +399,7 @@ class IncludeState:
         :param wordid: The wordid to validate.
         :return: True if all constraints are already met or the word ID is not the EOS id.
         """
-        return not self.root or wordid != self.eos_id or (len(self.root) == 1 and self.eos_id in self.state.final())
+        return not self.root or wordid != self.eos_id or (self.unmet() == 1 and self.eos_id in set().union(*[state.final() for state in self.states]))
     
     def wanted(self) -> Set[int]:
         """
@@ -401,16 +407,16 @@ class IncludeState:
         """
         if not self.root:
             return set()
-        return set(self.state.final() | self.state.children.keys())
+        return self.root.final().union(*[state.final() | state.children.keys() for state in self.states]) | self.root.children.keys()
     
     def unmet(self) -> int:
         """
         Return the number of unmet constraints.
         """
-        return 0 if not self.root else len(self.root) - self.partial
+        return 0 if not self.root else (len(self.root) if len(self.partial) == 0 else (len(self.root) - max(self.partial)))
 
     def __str__(self) -> str:
-        return str(self.state)
+        return str([str(state) for state in self.states])
 
 class IncludeBatch:
     """
@@ -429,9 +435,6 @@ class IncludeBatch:
                  eos_id: int,
                  include_list: Optional[List[RawConstraintList]] = None,
                  ctx = None) -> None:
-
-        #print('haha! I have a beam size of ' + str(beam_size) + 'and a batch size of ' + str(batch_size), include_list)
-        
         self.states = []    # type: List[IncludeState]
         self.wanted_indices = []
         for _ in range(batch_size * beam_size):
@@ -443,11 +446,6 @@ class IncludeBatch:
                 self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
 
         self.context = ctx
-        '''
-        # initialize wanted        
-        for i in range(len(self.states)):
-            self.wanted_indices[i].extend(list((self.states[i]).wanted()))
-        '''
         self.eos_id = eos_id
     def reorder(self, indices: mx.nd.NDArray) -> None:
         """
@@ -470,22 +468,16 @@ class IncludeBatch:
         for i, word_id in enumerate(word_ids):
             self.states[i] = (self.states[i]).consume(word_id)
 
-        #print('now I want:', self.getWanted())
     def get_wanted(self) -> (mx.nd.NDArray, mx.nd.NDArray):
         """
         Return the next wanted word id as a 2d list.
         """
-        
         wanted_ids = []
         wanted_word_ids = []
-            
-        #print('num of states:', len(self.states))
-
         for i in range(len(self.states)):
             for word_id in self.states[i].wanted():
                 wanted_ids.append(i)
                 wanted_word_ids.append(word_id)
-
         return (mx.nd.array(wanted_ids, ctx=self.context), mx.nd.array(wanted_word_ids, ctx=self.context))
     
     def get_finished(self) -> mx.nd.NDArray:
@@ -609,17 +601,16 @@ def topk(batch_size: int,
         seq_mat[finished_entries, \
                  constructParallel(finished_entries)] = big_matrix[2, big_matrix[1, :] == 0]
         best_finished = np.amin(seq_mat, axis=1).reshape(-1)
-        to_keep_prune = (big_matrix[2, :] - best_finished[(big_matrix[0, :]).astype(int)]) < beam_prune
-        big_matrix = big_matrix[:, to_keep_prune]
+        big_matrix = big_matrix[:, (big_matrix[2, :] - best_finished[(big_matrix[0, :]).astype(int)]) < beam_prune]
     
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
     
     # core DBA algorithm
-    parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array (from which we construct the parallel) is non-decreasing
+    parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array is non-decreasing
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
     # get rid of hypotheses that won't fit
-    parallel_to_sentid = constructParallel(big_matrix[0, :]) # number each hypthesis under the same ref sent
+    parallel_to_sentid = constructParallel(big_matrix[0, :]) # number each hypthesis from the same sent
     big_matrix = big_matrix[:, parallel_to_sentid < beam_size] 
     to_keep_ids = parallel_to_sentid[parallel_to_sentid < beam_size] + big_matrix[0, :] * beam_size
     # and update inactive accordingly
@@ -630,7 +621,7 @@ def topk(batch_size: int,
     # update inactive
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
-        final_matrix[2, :] = np.inf
+        final_matrix[2, :] = np.inf # mark seq scores as inf for fillers
         final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
     
@@ -643,7 +634,6 @@ def topk(batch_size: int,
     include_states.consume(best_word_ids)
    
     return best_ids, best_word_ids, seq_scores, include_states, inactive
-
 
 
 def main(args):
