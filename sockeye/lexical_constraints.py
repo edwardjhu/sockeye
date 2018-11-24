@@ -478,7 +478,7 @@ class IncludeBatch:
             for word_id in self.states[i].wanted():
                 wanted_ids.append(i)
                 wanted_word_ids.append(word_id)
-        return (mx.nd.array(wanted_ids, ctx=self.context), mx.nd.array(wanted_word_ids, ctx=self.context))
+        return (mx.nd.array(wanted_ids, ctx=self.context, dtype='int32'), mx.nd.array(wanted_word_ids, ctx=self.context, dtype='int32'))
     
     def get_finished(self) -> mx.nd.NDArray:
         """
@@ -488,7 +488,7 @@ class IncludeBatch:
         
         for i in range(len(self.states)):
             result.append(1 if self.states[i].root == None else 0)
-        return mx.nd.array(result, ctx=self.context)
+        return mx.nd.array(result, ctx=self.context, dtype='int8')
 
     def get_unmet(self) -> mx.nd.NDArray:
         """
@@ -526,50 +526,52 @@ def topk(batch_size: int,
     :return: A tuple containing the best hypothesis rows, the best hypothesis words, the scores,
         the updated constrained hypotheses, and the updated set of inactive hypotheses.
     """
-    # initialization 
-    wanted_ids, wanted_word_ids = include_states.get_wanted() # shape ((batch*beam) * target_vocab)
-    finished_indices = include_states.get_finished() # shape ((batch*beam) * 1)
-    good_hyp = mx.nd.zeros_like(scores, ctx=context, dtype='int8')
-   
     # Source 1: Global Top K
-    good_hyp[best_ids, best_word_ids] = 1
-    good_hyp[:, include_states.eos_id] *= finished_indices
-
-    # Source 2: words that advance the Tries
-    if wanted_ids.shape[0] > 0:
-        good_hyp[wanted_ids, wanted_word_ids] = 1
-    
-    # Source 3: best word per hypothesis
+    # Source 2: Words that advance the Tries
+    # Source 3: Best word per hypothesis 
+    wanted_ids, wanted_word_ids = include_states.get_wanted()
+    finished_indices = include_states.get_finished()
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
-    good_hyp[mx.nd.arange(best_next_idx.shape[0], ctx=context), best_next_idx] = 1
     
-    # marking everything else as np.inf
-    inf_matrix = mx.nd.zeros_like(scores, ctx=context)
-    inf_matrix[:] = np.inf
+    all_ids = mx.nd.concat(best_ids, mx.nd.arange(best_next_idx.shape[0], ctx=context, dtype='int32'), dim=0)
+    all_word_ids = mx.nd.concat(best_word_ids, mx.nd.cast(best_next_idx, dtype='int32'), dim=0)
+    # Only concat wanted_ids when it's not empty
+    if wanted_ids.shape[0] > 0:
+        all_ids = mx.nd.concat(all_ids, wanted_ids, dim=0)
+        all_word_ids = mx.nd.concat(all_word_ids, wanted_word_ids, dim=0)
+    all_ind = mx.nd.stack(all_ids, all_word_ids).asnumpy().T
     
-    # making sure we don't choose any inactive hypotheses
-    good_hyp = mx.nd.multiply(good_hyp, mx.nd.cast((-inactive+1), dtype='float32').reshape(-1, 1))
+    # Get rid of duplicate rows
+    sorted_idx = np.lexsort(all_ind.T)
+    sorted_data =  all_ind[sorted_idx, :]
+    row_mask = np.append([True], np.any(np.diff(sorted_data, axis=0), 1))
+    all_ind = sorted_data[row_mask]
 
-
-    scores = mx.nd.where(good_hyp, scores, inf_matrix)
+    # Deactivate inactive hypotheses
+    all_ind = all_ind[np.isin(all_ind[:, 0], np.flatnonzero(inactive.asnumpy()-1)), :]
     
-    def nonzero(mat):
-        total = int(mx.nd.sum(mat).asscalar())
-        indices = mx.nd.unravel_index(mx.nd.topk(mat, k=total, axis=None), shape=mat.shape)
-        return indices[0, :], indices[1, :]
+    # Deactivate eos_id on unfinished hypotheses
+    all_ind = all_ind[np.logical_or(all_ind[:, 1] != include_states.eos_id, finished_indices.asnumpy()[all_ind[:, 0]]), :]
 
-    final_ids, final_word_ids = nonzero(scores != np.inf)
-    sent_ids, _ = nonzero(scores.reshape((batch_size, -1)) != np.inf)
-    final_seq_scores = scores[final_ids, final_word_ids]
+    final_ids, final_word_ids = all_ind[:, 0].reshape(-1), all_ind[:, 1].reshape(-1)
+    final_sent_ids = np.floor(final_ids / beam_size)
+    final_seq_scores = (scores[mx.nd.array(final_ids, ctx=context), mx.nd.array(final_word_ids, ctx=context)]).asnumpy()
 
-    # assemble the big_matrix
-    unmet = include_states.get_unmet()[final_ids]
-    big_matrix = np.stack((sent_ids.asnumpy(), unmet.asnumpy(), final_seq_scores.asnumpy(), final_ids.asnumpy(), final_word_ids.asnumpy()))    
+    # Remove hypotheses with a seq score of inf
+    valid_hypo = final_seq_scores != np.inf
+    final_ids = final_ids[valid_hypo]
+    final_sent_ids = final_sent_ids[valid_hypo]
+    final_word_ids = final_word_ids[valid_hypo]
+    final_seq_scores = final_seq_scores[valid_hypo]
+
+    # Create the big_matrix
+    unmet = include_states.get_unmet().asnumpy()[final_ids]
+    big_matrix = np.stack((final_sent_ids, unmet, final_seq_scores, final_ids, final_word_ids))
     
     def constructParallel(arr):
-        '''
-        Construct a parallel array like [0, 1, 2, 0, 1, 2] to arr ([0, 0, 0, 1, 1, 1])
-        This is equivalent to, given that arr is non-decreasing:
+        """
+        Construct a step array like [0, 1, 0, 1, 2] given a non-decreasing array ([0, 0, 1, 1, 1])
+        This is equivalent to:
         
         result = [0]
         prev = arr[0]
@@ -580,21 +582,21 @@ def topk(batch_size: int,
                 result.append(0)
                 prev = num
         return result
-        '''
+        """
         _, ind = np.unique(arr, return_index=True)
         return (np.arange(0, len(arr)) - ind[np.digitize(arr, arr[ind]) - 1]).astype(int)
 
-    # update unmet row the big_matrix since some of the hypotheses will use tokens that move the constraints forward; we want to use the new unmet count
+    # Update unmet since some hypotheses will use tokens that advance the Trie; we want to use the new count
     if wanted_ids.shape[0] > 0:
-        bm_entries = mx.nd.stack(final_ids, final_word_ids).transpose()
+        bm_entries = mx.nd.array(np.stack((final_ids, final_word_ids)).transpose(), ctx=context, dtype='int32')
         _bm_entries = bm_entries.reshape((bm_entries.shape[0], 1, bm_entries.shape[1]))
         wanted_entries = mx.nd.stack(wanted_ids, wanted_word_ids).transpose()
         big_matrix[1, :] -= mx.nd.sum(mx.nd.prod(wanted_entries == _bm_entries, axis=-1), axis=1).asnumpy()
 
-    # sort big_matrix
+    # Sort big_matrix
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
    
-    # beam prune
+    # Beam prune
     if beam_prune > 0 and np.any(big_matrix[1, :] == 0):
         finished_entries = big_matrix[0, big_matrix[1, :] == 0].astype(int)
         seq_mat = np.full((batch_size, np.bincount(finished_entries).max()), np.inf)
@@ -609,16 +611,17 @@ def topk(batch_size: int,
     parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array is non-decreasing
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
-    # get rid of hypotheses that won't fit
+    # Get rid of hypotheses that won't fit
     parallel_to_sentid = constructParallel(big_matrix[0, :]) # number each hypthesis from the same sent
     big_matrix = big_matrix[:, parallel_to_sentid < beam_size] 
     to_keep_ids = parallel_to_sentid[parallel_to_sentid < beam_size] + big_matrix[0, :] * beam_size
-    # and update inactive accordingly
+    
+    # Update inactive accordingly
     inactive[:] = 1
     inactive[to_keep_ids] = 0
     
     
-    # update inactive
+    # Fill in the gaps
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
         final_matrix[2, :] = np.inf # mark seq scores as inf for fillers
