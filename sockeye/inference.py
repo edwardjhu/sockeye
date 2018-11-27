@@ -1608,7 +1608,8 @@ class Translator:
                     best_word_indices,
                     scores_accumulated,
                     self.context,
-                    self.beam_prune)
+                    self.beam_prune,
+                    finished)
 
             else:
                 # All rows are now active (after special treatment of start state at t=1)

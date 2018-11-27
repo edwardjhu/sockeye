@@ -372,7 +372,7 @@ class IncludeState:
         new_root = self.root
         for i, state in enumerate(self.states):
             if word_id in state.final():
-                # bingo! we fnished a constraint
+                # bingo! we finished a constraint
                 new_root = new_root.prune(self.current_phrase[i] + [word_id])
                 if not new_root:
                     return IncludeState(None, self.eos_id)
@@ -443,7 +443,10 @@ class IncludeBatch:
         # Store the sentence-level tries for each item in their portions of the beam
         if include_list is not None:
             for (i, raw_phrases) in enumerate(include_list):
-                self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
+                if raw_phrases:
+                    self.states += [IncludeState(IncludeTrie(raw_phrases), eos_id=eos_id)] * beam_size
+                else:
+                    self.states += [IncludeState(None, eos_id=eos_id)] * beam_size
 
         self.context = ctx
         self.eos_id = eos_id
@@ -480,7 +483,7 @@ class IncludeBatch:
                 wanted_word_ids.append(word_id)
         return (mx.nd.array(wanted_ids, ctx=self.context, dtype='int32'), mx.nd.array(wanted_word_ids, ctx=self.context, dtype='int32'))
     
-    def get_finished(self) -> mx.nd.NDArray:
+    def get_all_met(self) -> mx.nd.NDArray:
         """
         Return the next wanted word id in a 2d multi-hot matrix.
         """
@@ -508,7 +511,8 @@ def topk(batch_size: int,
          best_word_ids: mx.nd.NDArray,
          seq_scores: mx.nd.NDArray,
          context: mx.context.Context,
-         beam_prune: float) -> Tuple[np.array, np.array, np.array, AvoidBatch, mx.nd.NDArray]:
+         beam_prune: float,
+         finished: mx.nd.NDArray) -> Tuple[np.array, np.array, np.array, AvoidBatch, mx.nd.NDArray]:
     """
     Builds a new topk list such that the beam contains hypotheses having completed different numbers of constraints.
     These items are built from three different types: (1) the best items across the whole
@@ -530,7 +534,7 @@ def topk(batch_size: int,
     # Source 2: Words that advance the Tries
     # Source 3: Best word per hypothesis 
     wanted_ids, wanted_word_ids = include_states.get_wanted()
-    finished_indices = include_states.get_finished()
+    all_met_indices = include_states.get_all_met()
     best_next_idx = mx.nd.NDArray.argmin(scores, axis=1)
     
     all_ids = mx.nd.concat(best_ids, mx.nd.arange(best_next_idx.shape[0], ctx=context, dtype='int32'), dim=0)
@@ -551,7 +555,7 @@ def topk(batch_size: int,
     all_ind = all_ind[np.isin(all_ind[:, 0], np.flatnonzero(inactive.asnumpy()-1)), :]
     
     # Deactivate eos_id on unfinished hypotheses
-    all_ind = all_ind[np.logical_or(all_ind[:, 1] != include_states.eos_id, finished_indices.asnumpy()[all_ind[:, 0]]), :]
+    all_ind = all_ind[np.logical_or(all_ind[:, 1] != include_states.eos_id, (all_met_indices.asnumpy()[all_ind[:, 0]]).astype(bool)), :]
 
     final_ids, final_word_ids = all_ind[:, 0].reshape(-1), all_ind[:, 1].reshape(-1)
     final_sent_ids = np.floor(final_ids / beam_size)
@@ -598,17 +602,20 @@ def topk(batch_size: int,
    
     # Beam prune
     if beam_prune > 0 and np.any(big_matrix[1, :] == 0):
-        finished_entries = big_matrix[0, big_matrix[1, :] == 0].astype(int)
-        seq_mat = np.full((batch_size, np.bincount(finished_entries).max()), np.inf)
-        seq_mat[finished_entries, \
-                 constructParallel(finished_entries)] = big_matrix[2, big_matrix[1, :] == 0]
-        best_finished = np.amin(seq_mat, axis=1).reshape(-1)
-        big_matrix = big_matrix[:, (big_matrix[2, :] - best_finished[(big_matrix[0, :]).astype(int)]) < beam_prune]
-    
-    big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], big_matrix[0, :]))]
+        all_met_entries = big_matrix[0, big_matrix[1, :] == 0].astype(int)
+        seq_mat = np.full((batch_size, np.bincount(all_met_entries).max()), np.inf)
+        seq_mat[all_met_entries, \
+                 constructParallel(all_met_entries)] = big_matrix[2, big_matrix[1, :] == 0]
+        best_all_met = np.amin(seq_mat, axis=1).reshape(-1)
+        big_matrix = big_matrix[:, (big_matrix[2, :] - best_all_met[(big_matrix[0, :]).astype(int)]) < beam_prune]
     
     # core DBA algorithm
     parallel_to_unmet = constructParallel(big_matrix[1, :] + big_matrix[0, :] * (np.max(big_matrix[1, :])+1)) # make sure the orginal array is non-decreasing
+
+    # Smart beam allocation
+    #finished_count = mx.nd.sum((finished * (-inactive + 1)).reshape((batch_size, -1)), axis=1).asnumpy()
+    #parallel_to_unmet += (finished_count[(big_matrix[0, :]).astype(int)] * big_matrix[1, :]).astype(int)
+
     big_matrix = big_matrix[:, np.lexsort((big_matrix[2, :], big_matrix[1, :], parallel_to_unmet, big_matrix[0, :]))] # sort columns according to specific rows
     
     # Get rid of hypotheses that won't fit
@@ -625,6 +632,7 @@ def topk(batch_size: int,
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
         final_matrix[2, :] = np.inf # mark seq scores as inf for fillers
+        final_matrix[4, :] = np.inf # mark word_ids as inf for fillers
         final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
     
