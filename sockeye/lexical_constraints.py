@@ -138,6 +138,8 @@ class AvoidState:
                 new_states.append(state.step(word_id))
         if word_id in self.root.children:
             new_states.append(self.root.step(word_id))
+        if len(self.states) == 0 and len(new_states) == 0:
+            return self
         return AvoidState(self.root, new_states)
 
     def avoid(self) -> Set[int]:
