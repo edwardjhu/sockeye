@@ -502,7 +502,8 @@ class IncludeBatch:
             result.append(self.states[i].unmet())
         return mx.nd.array(result, ctx=self.context)
 
-def topk(batch_size: int,
+def topk(timestep: int,
+         batch_size: int,
          beam_size: int,
          inactive: mx.nd.NDArray,
          scores: mx.nd.NDArray,
@@ -518,6 +519,7 @@ def topk(batch_size: int,
     These items are built from three different types: (1) the best items across the whole
     scores matrix, (2) the set of words that must follow existing constraints, and (3) k-best items from each row.
 
+    :param timestep: The current decoder timestep.
     :param batch_size: The number of segments in the batch.
     :param beam_size: The length of the beam for each segment.
     :param inactive: Array listing inactive rows (shape: (beam_size,)).
@@ -526,7 +528,6 @@ def topk(batch_size: int,
     :param best_ids: The current list of best hypotheses (shape: (beam_size,)).
     :param best_word_ids: The parallel list of best word IDs (shape: (beam_size,)).
     :param seq_scores: (shape: (beam_size, 1)).
-    :param context: The MXNet device context.
     :return: A tuple containing the best hypothesis rows, the best hypothesis words, the scores,
         the updated constrained hypotheses, and the updated set of inactive hypotheses.
     """
@@ -645,7 +646,6 @@ def topk(batch_size: int,
     include_states.consume(best_word_ids)
    
     return best_ids, best_word_ids, seq_scores, include_states, inactive
-
 
 def main(args):
     """
