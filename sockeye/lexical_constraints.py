@@ -635,7 +635,6 @@ def topk(timestep: int,
     if big_matrix.shape[1] < batch_size * beam_size:
         final_matrix = np.zeros((big_matrix.shape[0], batch_size * beam_size))
         final_matrix[2, :] = np.inf # mark seq scores as inf for fillers
-        final_matrix[4, :] = np.inf # mark word_ids as inf for fillers
         final_matrix[:, to_keep_ids.astype(int)] = big_matrix
         big_matrix = final_matrix
     
