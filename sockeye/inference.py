@@ -384,7 +384,8 @@ def load_models(context: mx.context.Context,
                 forced_max_output_len: Optional[int] = None,
                 override_dtype: Optional[str] = None,
                 output_scores: bool = False,
-                sampling: bool = False) -> Tuple[List[InferenceModel],
+                sample_k: bool = False,
+                sample_p: bool = False) -> Tuple[List[InferenceModel],
                                                  List[vocab.Vocab],
                                                  vocab.Vocab]:
     """
@@ -424,7 +425,7 @@ def load_models(context: mx.context.Context,
 
     skip_softmax = False
     # performance tweak: skip softmax for a single model, decoding with beam size 1, when not sampling and no scores are required in output.
-    if len(model_folders) == 1 and beam_size == 1 and not output_scores and not sampling:
+    if len(model_folders) == 1 and beam_size == 1 and not output_scores and not sample_k and not sample_p:
         skip_softmax = True
         logger.info("Enabled skipping softmax for a single model and greedy decoding.")
 
@@ -1188,7 +1189,8 @@ class Translator:
     :param store_beam: If True, store the beam search history and return it in the TranslatorOutput.
     :param strip_unknown_words: If True, removes any <unk> symbols from outputs.
     :param skip_topk: If True, uses argmax instead of topk for greedy decoding.
-    :param sample: If True, sample from softmax multinomial instead of using topk.
+    :param sample_k: If True, sample topk tokens from softmax multinomial instead of using topk.
+    :param sample_p: If True, sample tokens with combined prob of p from softmax multinomial instead of using topk.
     """
 
     def __init__(self,
@@ -1207,7 +1209,8 @@ class Translator:
                  store_beam: bool = False,
                  strip_unknown_words: bool = False,
                  skip_topk: bool = False,
-                 sample: int = None) -> None:
+                 sample_k: int = None,
+                 sample_p: float = None) -> None:
         self.context = context
         self.length_penalty = length_penalty
         self.beam_prune = beam_prune
@@ -1248,9 +1251,14 @@ class Translator:
             utils.check_condition(self.beam_size == 1, "skip_topk has no effect if beam size is larger than 1")
             utils.check_condition(len(self.models) == 1, "skip_topk has no effect for decoding with more than 1 model")
 
-        self.sample = sample
-        utils.check_condition(not self.sample or self.restrict_lexicon is None,
+        self.sample_k = sample_k
+        self.sample_p = sample_p
+        utils.check_condition(not self.sample_k or self.restrict_lexicon is None,
                               "Sampling is not available when working with a restricted lexicon.")
+        utils.check_condition(not self.sample_p or self.restrict_lexicon is None,
+                              "Sampling is not available when working with a restricted lexicon.")
+        utils.check_condition(not self.sample_k or not self.sample_p,
+                              "Only one type of sampling can be used at a time.")
 
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self._max_input_length = self.models[0].max_input_length
@@ -1269,9 +1277,9 @@ class Translator:
         if not self.restrict_lexicon:
             if self.skip_topk:
                 self._top = Top1()  # type: mx.gluon.HybridBlock
-            elif self.sample is not None:
+            elif self.sample_k is not None:
                 self._top = SampleK(k=self.beam_size,
-                                    n=self.sample,
+                                    n=self.sample_k,
                                     max_batch_size=self.max_batch_size)  # type: mx.gluon.HybridBlock
             else:
                 self._top = TopK(k=self.beam_size,
@@ -1849,14 +1857,22 @@ class Translator:
                 block_indices = avoid_states.avoid()
                 if len(block_indices) > 0:
                     scores[block_indices] = np.inf
-                    if self.sample is not None:
+                    if self.sample_k is not None or self.sample_p is not None:
                         target_dists[block_indices] = np.inf
 
             # (3) Get beam_size winning hypotheses for each sentence block separately. Only look as
             # far as the active beam size for each sentence.
 
-            if self.sample is not None:
+            if self.sample_k is not None:
                 best_hyp_indices, best_word_indices, scores_accumulated = self._top(scores, target_dists, finished)
+            elif self.sample_p is not None:
+                best_hyp_indices, best_word_indices, scores_accumulated = SampleP(self.beam_size,
+                                                                                  self.sample_p,
+                                                                                  self.max_batch_size,
+                                                                                  scores,
+                                                                                  target_dists,
+                                                                                  finished,
+                                                                                  self.context)
             else:
                 # On the first timestep, all hypotheses have identical histories, so force topk() to choose extensions
                 # of the first row only by setting all other rows to inf
@@ -2244,6 +2260,42 @@ class SampleK(mx.gluon.HybridBlock):
         best_hyp_indices = F.slice_like(best_hyp_indices, best_word_indices, axes=(0,))
 
         return best_hyp_indices, best_word_indices, values
+
+import numpy as np
+def SampleP(k: int, p: float, max_batch_size: int, scores, target_dists, finished, context):
+    """
+    A numpy hack for nucleus sampling since MXNet doesn't support cumsum yet.
+    :param k: The size of the beam.
+    :param n: Sample from the top-N words in the vocab at each timestep.
+    :param max_batch_size: Number of sentences being decoded at once.
+    """
+
+    best_hyp_indices = mx.nd.arange(0, max_batch_size * k, dtype='int32', ctx=context)
+    # Map the negative logprobs to probabilities so as to have a distribution
+    target_dists = np.exp(-target_dists.asnumpy())
+
+    # p == 1 means sample from the full vocabulary. Otherwise, we sample from the top p prob mass.
+    if p != 1:
+        # select the top n in each row, via a mask
+        sorted_dists = np.flip(np.sort(target_dists, axis=1), axis=1)
+        cum_prob = np.cumsum(sorted_dists, axis=1)
+        index_masks = np.concatenate((np.full((cum_prob.shape[0], 1), True), (cum_prob < p)[:, :-1]), axis=1)
+        ret_to_order = np.argsort(np.flip(np.argsort(target_dists, axis=1), axis=1), axis=1)
+        item_masks = np.take(index_masks, ret_to_order)
+        # set unmasked items to 0
+        masked_items = mx.nd.array(np.where(item_masks, target_dists, 0), ctx=context)
+        # renormalize
+        target_dists = mx.nd.broadcast_div(masked_items, mx.nd.sum(masked_items, axis=1, keepdims=True))
+
+    # Sample from the target distributions over words, then get the corresponding values from the cumulative scores
+    best_word_indices = mx.nd.random.multinomial(target_dists, get_prob=False)
+    # Zeroes for finished hypotheses.
+    best_word_indices = mx.nd.where(finished, mx.nd.zeros_like(best_word_indices), best_word_indices)
+    values = mx.nd.pick(scores, best_word_indices, axis=1, keepdims=True)
+
+    best_hyp_indices = mx.nd.slice_like(best_hyp_indices, best_word_indices, axes=(0,))
+
+    return best_hyp_indices, best_word_indices, values
 
 
 class Top1(mx.gluon.HybridBlock):
