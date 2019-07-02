@@ -778,8 +778,19 @@ def make_input_from_dict(sentence_id: SentenceId, input_dict: Dict) -> Translato
         # Convert to a list of tokens
         if isinstance(avoid_list, list):
             avoid_list = [list(data_io.get_tokens(phrase)) for phrase in avoid_list]
+        # Special treatment for disjunctive constraints
         if isinstance(include_list, list):
-            include_list = [list(data_io.get_tokens(phrase)) for phrase in include_list]
+            new_include_list = []
+            for phrase in include_list:
+                if '|' not in phrase:
+                    new_include_list.append(list(data_io.get_tokens(phrase)))
+                else:
+                    disjuncts = phrase.split('|')
+                    disj_set = []
+                    for disj in disjuncts:
+                        disj_set.append(list(data_io.get_tokens(disj)))
+                    new_include_list.append(disj_set)
+            include_list = new_include_list
 
         return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors,
                                include_list=include_list, avoid_list=avoid_list, pass_through_dict=input_dict)
@@ -1441,7 +1452,7 @@ class Translator:
                 logger.info("Input %s has %d %s: %s", trans_input.sentence_id,
                             len(trans_input.include_list),
                             "positive constraint" if len(trans_input.include_list) == 1 else "positive constraints",
-                            ", ".join(" ".join(x) for x in trans_input.include_list))
+                            ", ".join(" ".join(x) if isinstance(x[0], str) else "|".join([" ".join(y) for y in x]) for x in trans_input.include_list))
 
         num_bad_empty = len(translated_chunks)
 
@@ -1522,7 +1533,8 @@ class Translator:
                 source[j, :num_tokens, i] = data_io.tokens2ids(factor, self.source_vocabs[i])[:num_tokens]
 
             if trans_input.include_list is not None:
-                raw_include_list[j] = [data_io.tokens2ids(phrase, self.vocab_target) for phrase in
+                raw_include_list[j] = [data_io.tokens2ids(phrase, self.vocab_target) if isinstance(phrase[0], str) else 
+                                      [data_io.tokens2ids(disj, self.vocab_target) for disj in phrase] for phrase in
                                       trans_input.include_list]
                 if any(self.unk_id in phrase for phrase in raw_include_list[j]):
                     logger.warning("Sentence %s: %s was found in the list of phrases to include; "
