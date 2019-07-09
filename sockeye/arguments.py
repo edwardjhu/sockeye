@@ -1356,6 +1356,13 @@ def add_inference_args(params):
                                default=None,
                                help="Specify a file containing phrases (pre-processed, one per line) to block "
                                     "from the output. Default: %(default)s.")
+    decode_params.add_argument('--constraint-offset',
+                               type=float,
+                               default=1.0,
+                               nargs='?',
+                               const=0,
+                               help='A constant that will be subtracted from the negative log-likelihood of positive constraints '
+                                    'Default: %(default)s.')
     decode_params.add_argument('--strip-unknown-words',
                                action='store_true',
                                default=False,

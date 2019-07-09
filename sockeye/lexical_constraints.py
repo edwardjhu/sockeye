@@ -506,7 +506,66 @@ class IncludeBatch:
             result.append(self.states[i].unmet())
         return mx.nd.array(result, ctx=self.context)
 
-def topk(batch_size: int,
+class IncludeMatrix:
+    """
+    Represents a set of phrasal constraints for all items in the batch.
+    For each hypotheses, there is an IncludeTrie tracking its state.
+
+    :param batch_size: The batch size.
+    :param beam_size: The beam size.
+    :param include_list: The list of lists (raw phrasal constraints as IDs, one for each item in the batch).
+    :param global_include_trie: A translator-level vocabulary of items to include.
+    """
+    def __init__(self,
+                 batch_size: int,
+                 beam_size: int,
+                 vocab_size: int,
+                 include_list: Optional[List[RawConstraintList]] = None,
+                 ctx = None) -> None:
+        self.states = mx.nd.zeros((batch_size*beam_size, vocab_size), ctx=ctx)    # type: List[IncludeState]
+        # Store the sentence-level tries for each item in their portions of the beam
+        if include_list is not None:
+            bags_of_words = [[item for sublist in include_words for item in sublist] \
+                                        if include_words else [] \
+                                        for include_words in include_list]
+            for (i, bag_of_words) in enumerate(bags_of_words):
+                for word_id in bag_of_words:
+                    self.states[i*beam_size:(i+1)*beam_size, word_id] += 1
+
+        self.context = ctx
+    def reorder(self, indices: mx.nd.NDArray) -> None:
+        """
+        Reorders the include list according to the selected row indices.
+        This can produce duplicates, but this is fixed if state changes occur in consume().
+
+        :param indices: An mx.nd.NDArray containing indices of hypotheses to select.
+        """
+        self.states = self.states[indices, :]
+
+
+    def consume(self, word_ids: mx.nd.NDArray) -> None:
+        """
+        Consumes a word for each trie, updating respective states.
+
+        :param word_ids: The set of word IDs.
+        """
+        self.states[(mx.nd.arange(self.states.shape[0], ctx=self.context), word_ids)] -= 1
+        self.states = mx.nd.where(self.states < 0, mx.nd.zeros_like(self.states, ctx=self.context), self.states)
+
+    def get_mask(self) -> mx.nd.NDArray:
+        """
+        Return the binary matrix.
+        """
+        return self.states > 0
+    
+    def get_matrix(self) -> mx.nd.NDArray:
+        """
+        Return the full matrix.
+        """
+        return self.states
+
+def topk(timestep: int,
+         batch_size: int,
          beam_size: int,
          inactive: mx.nd.NDArray,
          scores: mx.nd.NDArray,

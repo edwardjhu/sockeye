@@ -147,6 +147,7 @@ def run_translate(args: argparse.Namespace):
                                           sample=args.sample,
                                           constant_length_ratio=constant_length_ratio,
                                           brevity_penalty=brevity_penalty)
+                                          constraint_offset=args.constraint_offset)
         read_and_translate(translator=translator,
                            output_handler=output_handler,
                            chunk_size=args.chunk_size,
