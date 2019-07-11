@@ -1327,7 +1327,7 @@ class Translator:
                  skip_topk: bool = False,
                  sample: int = None,
                  constant_length_ratio: float = 0.0,
-                 brevity_penalty: Optional[BrevityPenalty] = None) -> None:
+                 brevity_penalty: Optional[BrevityPenalty] = None,
                  constraint_offset: float = 1.0) -> None:
         self.context = context
         self.length_penalty = length_penalty
@@ -2104,7 +2104,7 @@ class Translator:
             #                                                                               finished)
 
             # (7) update negative constraints
-	    if self.global_avoid_trie or any(raw_avoid_list):
+            if self.global_avoid_trie or any(raw_avoid_list):
                 avoid_states.reorder(best_hyp_indices)
                 avoid_states.consume(best_word_indices)
             
@@ -2392,7 +2392,7 @@ class PruneHypotheses(mx.gluon.HybridBlock):
         best_word_indices = F.where(inactive, F.zeros_like(best_word_indices), best_word_indices)
         scores = F.where(inactive, inf_array, scores)
 
-	return inactive, best_word_indices, scores
+        return inactive, best_word_indices, scores
 
 
 class SortByIndex(mx.gluon.HybridBlock):

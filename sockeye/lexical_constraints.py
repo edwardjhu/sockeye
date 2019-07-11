@@ -325,13 +325,13 @@ class IncludeTrie:
         # check if we have satisfied all constraints
         return (len(self.final_ids) == 0) and (len(self.children) == 0)
 
-	def final(self) -> Set[int]:
-		"""
-		Returns the set of final ids at this node.
+        def final(self) -> Set[int]:
+            """
+            Returns the set of final ids at this node.
 
-		:return: The set of word IDs that end a constraint at this state.
-		"""
-		return self.final_ids
+            :return: The set of word IDs that end a constraint at this state.
+            """
+            return self.final_ids
 
 class IncludeState:
     """
