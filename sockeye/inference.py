@@ -2044,7 +2044,7 @@ class Translator:
             # Boost entries that should be included
             if any(raw_include_list):
                 binary_matrix = include_states.get_mask()
-                scores -= binary_matrix * self.constraint_offset
+                scores -= mx.nd.multiply(mx.nd.broadcast_minus(scores, mx.nd.min(scores, axis=1, keepdims=True)), binary_matrix) * self.constraint_offset
 
             # (3) Get beam_size winning hypotheses for each sentence block separately. Only look as
             # far as the active beam size for each sentence.
