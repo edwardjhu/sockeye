@@ -245,10 +245,15 @@ class IncludeTrie:
                  raw_phrases: Optional[RawConstraintList] = None) -> None:
         self.final_ids = set()    # type: Set[int]
         self.children = {}    # type: Dict[int,'AvoidTrie']
+        self.disjunct_dict = {}
 
         if raw_phrases:
-            for phrase in raw_phrases:
-                self.add_phrase(phrase)
+            if not isinstance(phrase[0], list):
+                    self.add_phrase(phrase)
+                else:
+                    for disj in phrase:
+                        self.disjunct_dict[str(disj)] = phrase
+                        self.add_phrase(disj)
 
     def __str__(self) -> str:
         s = '({}'.format(list(self.final_ids))
@@ -299,8 +304,13 @@ class IncludeTrie:
         :param phrase: A list of word IDs, the path of which will be elimated from the current Trie
         """
         to_prune = copy.deepcopy(self)
-        if to_prune._prune(phrase):
-            return None
+        if str(phrase) in self.disjunct_dict:
+            for disj in self.disjunct_dict[str(phrase)]:
+                if to_prune._prune(disj):
+                    return None
+        else:
+            if to_prune._prune(phrase):
+                return None
         return to_prune
 
     
