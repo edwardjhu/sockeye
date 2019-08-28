@@ -250,10 +250,10 @@ class IncludeTrie:
         if raw_phrases:
             if not isinstance(phrase[0], list):
                     self.add_phrase(phrase)
-                else:
-                    for disj in phrase:
-                        self.disjunct_dict[str(disj)] = phrase
-                        self.add_phrase(disj)
+            else:
+                for disj in phrase:
+                    self.disjunct_dict[str(disj)] = phrase
+                    self.add_phrase(disj)
 
     def __str__(self) -> str:
         s = '({}'.format(list(self.final_ids))
