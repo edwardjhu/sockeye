@@ -825,7 +825,10 @@ def make_input_from_dict(sentence_id: SentenceId,
 
         # Convert to a list of tokens
         if isinstance(avoid_list, list):
-            avoid_list = [list(data_io.get_tokens(phrase)) for phrase in avoid_list]
+            if translator.avoid_char:
+                avoid_list = [list(data_io.get_tokens(' '.join(''.join(phrase.split())))) for phrase in avoid_list]
+            else:
+                avoid_list = [list(data_io.get_tokens(phrase)) for phrase in avoid_list]
         if isinstance(include_list, list):
             new_include_list = []
             for phrase in include_list:
@@ -1329,6 +1332,7 @@ class Translator:
     :param store_beam: If True, store the beam search history and return it in the TranslatorOutput.
     :param strip_unknown_words: If True, removes any <unk> symbols from outputs.
     :param skip_topk: If True, uses argmax instead of topk for greedy decoding.
+    :param avoid_char: If True, uses char tries instead of token tries.
     :param sample: If True, sample from softmax multinomial instead of using topk.
     :param constant_length_ratio: If > 0, will override models' prediction of the length ratio (if any).
     :param brevity_penalty: Optional BrevityPenalty.
@@ -1351,6 +1355,7 @@ class Translator:
                  store_beam: bool = False,
                  strip_unknown_words: bool = False,
                  skip_topk: bool = False,
+                 avoid_char: bool = False,
                  sample: int = None,
                  constant_length_ratio: float = 0.0,
                  brevity_penalty: Optional[BrevityPenalty] = None) -> None:
@@ -1396,6 +1401,8 @@ class Translator:
             utils.check_condition(self.beam_size == 1, "skip_topk has no effect if beam size is larger than 1")
             utils.check_condition(len(self.models) == 1, "skip_topk has no effect for decoding with more than 1 model")
 
+        self.avoid_char = avoid_char
+        
         self.sample = sample
         utils.check_condition(not self.sample or self.restrict_lexicon is None,
                               "Sampling is not available when working with a restricted lexicon.")
@@ -2035,7 +2042,10 @@ class Translator:
         if self.global_avoid_trie or any(raw_avoid_list):
             avoid_states = constrained.AvoidBatch(self.batch_size, self.beam_size,
                                                   avoid_list=raw_avoid_list,
-                                                  global_avoid_trie=self.global_avoid_trie)
+                                                  global_avoid_trie=self.global_avoid_trie,
+                                                  use_char=self.avoid_char,
+                                                  target_vocab=self.vocab_target if self.avoid_char else None,
+                                                  target_vocab_inv=self.vocab_target_inv if self.avoid_char else None)
             avoid_states.consume(best_word_indices)
 
         # Records items in the beam that are inactive. At the beginning (t==1), there is only one valid or active

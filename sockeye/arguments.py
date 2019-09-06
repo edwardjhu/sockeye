@@ -1300,6 +1300,11 @@ def add_inference_args(params):
                                action='store_true',
                                help='Use argmax instead of topk for greedy decoding (when --beam-size 1).'
                                     'Default: %(default)s.')
+    decode_params.add_argument('--avoid-char',
+                               default=False,
+                               action='store_true',
+                               help='Use char-tries instead of token tries for negative constraints.'
+                                    'Default: %(default)s.')
     decode_params.add_argument('--sample',
                                type=int_greater_or_equal(0),
                                default=None,

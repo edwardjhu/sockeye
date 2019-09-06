@@ -144,6 +144,7 @@ def run_translate(args: argparse.Namespace):
                                           store_beam=store_beam,
                                           strip_unknown_words=args.strip_unknown_words,
                                           skip_topk=args.skip_topk,
+                                          avoid_char=args.avoid_char,
                                           sample=args.sample,
                                           constant_length_ratio=constant_length_ratio,
                                           brevity_penalty=brevity_penalty)

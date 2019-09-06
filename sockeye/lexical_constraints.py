@@ -15,11 +15,11 @@ import copy
 import logging
 from operator import attrgetter
 from typing import Dict, List, Optional, Tuple, Set
-
 import mxnet as mx
 import numpy as np
 
 from . import constants as C
+from . import data_io
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,7 @@ class AvoidTrie:
         return phrase_count
 
     def add_trie(self,
-                 trie: 'AvoidTrie',
-                 phrase: Optional[List[int]] = None) -> None:
+                 trie: 'AvoidTrie') -> None:
         self.final_ids |= trie.final()
         for child_id, child in trie.children.items():
             if child_id not in self.children:
@@ -99,6 +98,29 @@ class AvoidTrie:
         :return: The set of word IDs that end a constraint at this state.
         """
         return self.final_ids
+    
+    def _phrase_final(self) -> Set[Tuple[int]]:
+        """
+        Returns the set of final ids at this node.
+
+        :return: The set of word IDs that end a constraint at this state.
+        """
+        phrase_finals_list = set()
+        for char in self.final_ids:
+            phrase_finals_list.add((char,))
+        for child in self.children:
+            for phrase in self.children[child]._phrase_final():
+                phrase_finals_list.add((child,) + phrase)
+        return phrase_finals_list
+
+    def phrase_final(self, vocab, vocab_inv) -> Set[int]:
+        phrase_finals = self._phrase_final()
+        final_strs = []
+        for phrase in phrase_finals:
+            final_strs.append(''.join(data_io.ids2tokens(phrase,
+                                                         vocab_inv,
+                                                         set())))
+        return set(data_io.tokens2ids(final_strs, vocab))
 
 
 class AvoidState:
@@ -112,10 +134,14 @@ class AvoidState:
     """
     def __init__(self,
                  avoid_trie: AvoidTrie,
-                 states: List[AvoidTrie] = None) -> None:
+                 states: List[AvoidTrie] = None,
+                 target_vocab = None,
+                 target_vocab_inv = None) -> None:
 
         self.root = avoid_trie
         self.states = states if states else []
+        self.target_vocab = target_vocab
+        self.target_vocab_inv = target_vocab_inv
 
     def consume(self, word_id: int) -> 'AvoidState':
         """
@@ -140,7 +166,19 @@ class AvoidState:
             new_states.append(self.root.step(word_id))
         if len(self.states) == 0 and len(new_states) == 0:
             return self
-        return AvoidState(self.root, new_states)
+        return AvoidState(self.root, new_states, target_vocab=self.target_vocab, target_vocab_inv=self.target_vocab_inv)
+
+    def consume_char(self, word_ids: List[int]) -> 'AvoidState':
+        """
+        Consumes a list of chars, and updates the state based on it. Returns new objects on a state change.
+        Similar to consume, but for char tries.
+
+        :param word_ids: The list of chars that was just generated.
+        """
+        new_avoid_state = self
+        for word_id in word_ids:
+            new_avoid_state = new_avoid_state.consume(word_id)
+        return new_avoid_state
 
     def avoid(self) -> Set[int]:
         """
@@ -150,6 +188,15 @@ class AvoidState:
         :return: A set of integers representing words that must not be generated next by this hypothesis.
         """
         return self.root.final().union(*[state.final() for state in self.states])
+    
+    def char_avoid(self) -> Set[int]:
+        """
+        Returns a set of word IDs that should be avoided. This includes the set of final states from the
+        root node, which are single tokens that must never be generated.
+
+        :return: A set of integers representing words that must not be generated next by this hypothesis.
+        """
+        return self.root.phrase_final(self.target_vocab, self.target_vocab_inv).union(*[state.phrase_final(self.target_vocab, self.target_vocab_inv) for state in self.states])
 
     def __str__(self) -> str:
         return str([str(state) for state in self.states])
@@ -169,19 +216,31 @@ class AvoidBatch:
                  batch_size: int,
                  beam_size: int,
                  avoid_list: Optional[List[RawConstraintList]] = None,
-                 global_avoid_trie: Optional[AvoidTrie] = None) -> None:
+                 global_avoid_trie: Optional[AvoidTrie] = None,
+                 use_char: Optional[bool] = False,
+                 target_vocab = None,
+                 target_vocab_inv = None) -> None:
 
         self.global_avoid_states = []  # type: List[AvoidState]
         self.local_avoid_states = []  # type: List[AvoidState]
+        self.use_char = use_char
+        self.target_vocab = target_vocab
+        self.target_vocab_inv = target_vocab_inv
 
         # Store the global trie for each hypothesis
         if global_avoid_trie is not None:
-            self.global_avoid_states = [AvoidState(global_avoid_trie)] * batch_size * beam_size
+            self.global_avoid_states = [AvoidState(global_avoid_trie,
+                                                   target_vocab=target_vocab,
+                                                   target_vocab_inv=target_vocab_inv)] \
+                                       * batch_size * beam_size
 
         # Store the sentence-level tries for each item in their portions of the beam
         if avoid_list is not None:
             for raw_phrases in avoid_list:
-                self.local_avoid_states += [AvoidState(AvoidTrie(raw_phrases))] * beam_size
+                self.local_avoid_states += [AvoidState(AvoidTrie(raw_phrases), 
+                                                       target_vocab=target_vocab,
+                                                       target_vocab_inv=target_vocab_inv)] \
+                                           * beam_size
 
     def reorder(self, indices: mx.nd.NDArray) -> None:
         """
@@ -204,10 +263,24 @@ class AvoidBatch:
         """
         word_ids = word_ids.asnumpy().tolist()
         for i, word_id in enumerate(word_ids):
-            if self.global_avoid_states:
-                self.global_avoid_states[i] = self.global_avoid_states[i].consume(word_id)
-            if self.local_avoid_states:
-                self.local_avoid_states[i] = self.local_avoid_states[i].consume(word_id)
+            if self.use_char:
+                chars = [token for token in data_io.ids2tokens([word_id],
+                                                      self.target_vocab_inv,
+                                                      set())][0]
+                char_ids = data_io.tokens2ids(chars, self.target_vocab)
+                if self.global_avoid_states:
+                    self.global_avoid_states[i] \
+                            = self.global_avoid_states[i].consume_char(char_ids)
+                if self.local_avoid_states:
+                    self.local_avoid_states[i] \
+                            = self.local_avoid_states[i].consume_char(char_ids)
+            else:
+                if self.global_avoid_states:
+                    self.global_avoid_states[i] \
+                            = self.global_avoid_states[i].consume(word_id)
+                if self.local_avoid_states:
+                    self.local_avoid_states[i] \
+                            = self.local_avoid_states[i].consume(word_id)
 
     def avoid(self) -> Tuple[Tuple[int], Tuple[int]]:
         """
@@ -220,11 +293,11 @@ class AvoidBatch:
         """
         to_avoid = set()  # type: Set[Tuple[int, int]]
         for i, state in enumerate(self.global_avoid_states):
-            for word_id in state.avoid():
+            for word_id in state.char_avoid() if self.use_char else state.avoid():
                 if word_id > 0:
                     to_avoid.add((i, word_id))
         for i, state in enumerate(self.local_avoid_states):
-            for word_id in state.avoid():
+            for word_id in state.char_avoid() if self.use_char else state.avoid():
                 if word_id > 0:
                     to_avoid.add((i, word_id))
 
