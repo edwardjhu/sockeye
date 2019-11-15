@@ -2320,46 +2320,6 @@ class Translator:
                 [self.vocab_target_inv[x] for x in word_ids if x != 0])
             logger.info('%d %d %d %d %.2f %s', i + 1, finished[i].asscalar(), inactive[i].asscalar(), unmet, score,
                         hypothesis)
-def _concat_translations(translations: List[Translation], stop_ids: Set[int],
-                         length_penalty: LengthPenalty) -> Translation:
-    """
-    Combine translations through concatenation.
-
-    :param translations: A list of translations (sequence starting with BOS symbol, attention_matrix), score and length.
-    :param translations: The EOS symbols.
-    :return: A concatenation if the translations with a score.
-    """
-    # Concatenation of all target ids without BOS and EOS
-    target_ids = []
-    attention_matrices = []
-    beam_histories = []  # type: List[BeamHistory]
-    for idx, translation in enumerate(translations):
-        if idx == len(translations) - 1:
-            target_ids.extend(translation.target_ids)
-            attention_matrices.append(translation.attention_matrix)
-        else:
-            if translation.target_ids[-1] in stop_ids:
-                target_ids.extend(translation.target_ids[:-1])
-                attention_matrices.append(translation.attention_matrix[:-1, :])
-            else:
-                target_ids.extend(translation.target_ids)
-                attention_matrices.append(translation.attention_matrix)
-        beam_histories.extend(translation.beam_histories)
-
-    # Combine attention matrices:
-    attention_shapes = [attention_matrix.shape for attention_matrix in attention_matrices]
-    attention_matrix_combined = np.zeros(np.sum(np.asarray(attention_shapes), axis=0))
-    pos_t, pos_s = 0, 0
-    for attention_matrix, (len_t, len_s) in zip(attention_matrices, attention_shapes):
-        attention_matrix_combined[pos_t:pos_t + len_t, pos_s:pos_s + len_s] = attention_matrix
-        pos_t += len_t
-        pos_s += len_s
-
-    # Unnormalize + sum and renormalize the score:
-    score = sum(translation.score * length_penalty.get(len(translation.target_ids))
-                for translation in translations)
-    score = score / length_penalty.get(len(target_ids))
-    return Translation(target_ids, attention_matrix_combined, score, beam_histories)
 
 
 class PruneHypotheses(mx.gluon.HybridBlock):
